@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: v1/requireme
+          cache-dependency-path: v1/requirements.txt
       - name: 安裝套件
         run: pip install -r requirements.txt
 
