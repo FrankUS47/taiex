@@ -25,6 +25,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    defaults:
+       run:
+          working-directory: v1          
     steps:
       - uses: actions/checkout@v4
 
