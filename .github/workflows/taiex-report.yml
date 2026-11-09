@@ -1,0 +1,73 @@
+name: taiex-report
+
+on:
+  schedule:
+    - cron: "40 0 * * 1-5"
+    - cron: "30 8 * * 1-5"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Taipei
+  STOCK_ARGS: "--max-price 50 --top 10"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 大盤分析
+        run: python taiex_analyzer.py --no-open
+
+      - name: 個股篩選（失敗不影響大盤報告）
+        if: env.STOCK_ARGS != ''
+        continue-on-error: true
+        run: python stock_screener.py $STOCK_ARGS --no-open
+
+      - name: 組合網站
+        run: |
+          mkdir site
+          cp taiex_report.html site/
+          if [ -f stock_report.html ]; then cp stock_report.html site/; fi
+          {
+            echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.8">'
+            echo "<h1>台股報告</h1><p>更新時間：$(date '+%Y-%m-%d %H:%M')（台灣時間）</p><ul><li><a href=\"taiex_report.html\">大盤 K 線與隔日行情分析</a></li>"
+            if [ -f site/stock_report.html ]; then echo '<li><a href="stock_report.html">個股篩選與評價</a></li>'; fi
+            echo '</ul><p style="color:#666">規則式計算，僅供研究參考，不構成投資建議。</p></body></html>'
+          } > site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
