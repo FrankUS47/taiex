@@ -1,1 +1,78 @@
+# 放在儲存庫的 .github/workflows/taiex-report.yml
+# 功能：台灣時間每個交易日 08:40 與 16:30 自動產生大盤報告（與選股報告），發佈到 GitHub Pages
+name: taiex-report
+
+on:
+  schedule:
+    # cron 以 UTC 計算，台灣時間 = UTC + 8
+    - cron: "40 0 * * 1-5"   # 台灣時間 08:40（開盤前，已有美股收盤資料）
+    - cron: "30 8 * * 1-5"   # 台灣時間 16:30（收盤後，三大法人資料通常已公布）
+  workflow_dispatch:          # 可在 Actions 頁面手動執行
+  push:
+    branches: [main]          # 推送程式時也會重跑一次
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Taipei             # 讓報告上的產生時間顯示台灣時間
+  # 選股條件，格式同 stock_screener.py 的參數；設成空字串 "" 就不跑選股
+  STOCK_ARGS: "--max-price 50 --top 10"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 大盤分析
+        run: python taiex_analyzer.py --no-open
+
+      - name: 個股篩選（失敗不影響大盤報告）
+        if: env.STOCK_ARGS != ''
+        continue-on-error: true
+        run: python stock_screener.py $STOCK_ARGS --no-open
+
+      - name: 組合網站
+        run: |
+          mkdir site
+          cp taiex_report.html site/
+          if [ -f stock_report.html ]; then cp stock_report.html site/; fi
+          {
+            echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.8">'
+            echo "<h1>台股報告</h1><p>更新時間：$(date '+%Y-%m-%d %H:%M')（台灣時間）</p><ul><li><a href=\"taiex_report.html\">大盤 K 線與隔日行情分析</a></li>"
+            if [ -f site/stock_report.html ]; then echo '<li><a href="stock_report.html">個股篩選與評價</a></li>'; fi
+            echo '</ul><p style="color:#666">規則式計算，僅供研究參考，不構成投資建議。</p></body></html>'
+          } > site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
 
