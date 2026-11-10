@@ -324,6 +324,26 @@ def li(R):
     return "".join(f"<li>{'🔺' if p > 0 else '🔻' if p < 0 else '➖'} {html.escape(t)}（{p:+d}）</li>" for p, t in R)
 
 
+def yahoo_intraday():
+    """證交所即時資料抓不到時的備援：Yahoo 加權指數 1 分鐘資料（可能延遲）。"""
+    h = yf.Ticker("^TWII").history(period="1d", interval="1m")
+    if h is None or h.empty:
+        raise RuntimeError("Yahoo 無盤中分鐘資料（非開盤時段或資料源延遲）")
+    ts = h.index[-1]
+    return {"price": float(h["Close"].iloc[-1]), "time": ts.strftime("%Y-%m-%d %H:%M"), "date": ts.date()}
+
+
+def current_quote(df, rt, yi):
+    """目前大盤報價：證交所即時 → Yahoo 分鐘 → 最新日K，依序備援。"""
+    c = df["Close"]
+    if rt:
+        return {"price": rt["price"], "prev": rt["prev"], "src": "證交所即時", "time": f'{rt["date"]} {rt["time"]}'}
+    if yi:
+        prev = float(c.iloc[-2]) if (yi["date"] == df.index[-1].date() and len(c) > 1) else float(c.iloc[-1])
+        return {"price": yi["price"], "prev": prev, "src": "Yahoo 盤中分鐘（可能延遲）", "time": yi["time"]}
+    return {"price": float(c.iloc[-1]), "prev": float(c.iloc[-2]), "src": "最新日K收盤", "time": str(df.index[-1].date())}
+
+
 def twse_fill(df):
     """Yahoo 的日K若落後，用證交所「加權指數歷史」補上較新的日K（無成交量，以 0 表示）。"""
     last, today, add = df.index[-1], dt.date.today(), []
@@ -431,6 +451,8 @@ def build(refresh=0):
     rt = safe("證交所即時指數", twse_realtime)
     inst = safe("證交所三大法人", institutional)
     fut = safe("期交所台指期", taifex)
+    yi = None if rt else safe("Yahoo加權指數1分鐘(即時備援)", yahoo_intraday)
+    cur = current_quote(df, rt, yi)
     nws = {k: safe(f"新聞:{k}", news, q) for k, q in NEWS_TOPICS.items()}
 
     T, info = tech(df)
@@ -446,15 +468,17 @@ def build(refresh=0):
     if refresh:
         p.append(f'<meta http-equiv="refresh" content="{refresh}">')
     p.append(f"<style>{CSS}</style></head><body><main><h1>📊 台股大盤 K 線與隔日行情分析</h1>")
-    p.append(f'<p class="note">產生時間：{dt.datetime.now():%Y-%m-%d %H:%M:%S}　歷史資料至 {info["date"]}（Yahoo 可能有延遲）。美股等海外資料為其最近一個收盤/報價日。</p>')
+    p.append(f'<p class="note">本頁為定時更新的快照（非逐筆即時）。報告產生時間：{dt.datetime.now():%Y-%m-%d %H:%M:%S}　歷史資料至 {info["date"]}（Yahoo 可能有延遲）。美股等海外資料為其最近一個收盤/報價日。</p>')
     exp = expected_last_day()
     if info["date"] < exp:
         p.append(f'<p class="bad">⚠ 日K最新只到 {info["date"]}，依今天時間應至少到 {exp}（若剛好遇到國定假日則屬正常）。資料可能落後，分析請留意時效。</p>')
     if n_fill:
         p.append(f'<p class="note">已用證交所資料補上 {n_fill} 根較新的日K（證交所資料沒有成交量，補上的K棒量能以 0 顯示）。</p>')
     p.append('<div class="card">')
-    if rt:
-        p.append(f'<div>盤中即時（證交所 {rt["time"]}）：<b>{rt["price"]:,.2f}</b> <span class="{cls(rt["pct"])}">{rt["pct"]:+.2f}%</span></div>')
+    chg = cur["price"] - cur["prev"]
+    pc = chg / cur["prev"] * 100
+    p.append(f'<div class="big">加權指數 <b>{cur["price"]:,.2f}</b> <span class="{cls(chg)}">{chg:+,.2f}（{pc:+.2f}%）</span></div>')
+    p.append(f'<div class="note">來源：{cur["src"]}｜資料時間：{cur["time"]}｜昨收 {cur["prev"]:,.2f}</div>')
     p.append(f'<div class="big">隔日預判：<span class="{c}">{label}</span>（總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
     p.append(f'<p>近20日壓力約 <b>{info["hi"]:,.0f}</b>，支撐約 <b>{info["lo"]:,.0f}</b>；有效突破壓力偏多，跌破支撐轉弱。</p></div>')
     p.append('<div class="card"><h2>K 線圖</h2>')
@@ -481,7 +505,7 @@ def build(refresh=0):
     p.append(f'<div class="card"><h2>資料來源狀態</h2><table>{st}</table><p class="note">失敗的來源不會被估算或補數字，該項不計入評分。</p></div>')
     p.append('<p class="note">本報告為規則式技術與總體指標加總，並非預測，不構成投資建議；我不是財務顧問，投資前請自行研究並控管風險。</p></main></body></html>')
     OUT_FILE.write_text("".join(p), encoding="utf-8")
-    print(f"[{dt.datetime.now():%H:%M:%S}] 隔日預判：{label}（{tot:+d}）→ {OUT_FILE}")
+    print(f"[{dt.datetime.now():%H:%M:%S}] 加權 {cur['price']:,.2f}（{chg:+,.2f}／{pc:+.2f}%，{cur['src']}）｜隔日預判：{label}（{tot:+d}）→ {OUT_FILE}")
     for n, ok, m in STATUS:
         if not ok:
             print(f"  ✗ {n}: {m}")
@@ -491,11 +515,12 @@ def main():
     ap = argparse.ArgumentParser(description="台股大盤 K 線與隔日行情分析")
     ap.add_argument("--watch", type=int, default=0, help="每 N 秒更新一次（建議 >= 60）；0 表示只跑一次")
     ap.add_argument("--no-open", action="store_true", help="不自動開啟瀏覽器")
+    ap.add_argument("--refresh", type=int, default=0, help="報告網頁每 N 秒自動重新載入（排程發佈用，例如 300）")
     a = ap.parse_args()
     first = True
     while True:
         try:
-            build(refresh=max(a.watch, 0))
+            build(refresh=max(a.watch, a.refresh, 0))
             if first and not a.no_open:
                 webbrowser.open(OUT_FILE.as_uri())
             first = False
