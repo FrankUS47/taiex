@@ -1,15 +1,21 @@
-# 放在儲存庫的 .github/workflows/taiex-report.yml
-# 功能：台灣時間每個交易日 08:40 與 16:30 自動產生大盤報告（與選股報告），發佈到 GitHub Pages
+# 放在儲存庫的 .github/workflows/taiex-report.yml（覆蓋舊內容）
+# 程式檔放在儲存庫的 v1 資料夾
 name: taiex-report
 
 on:
   schedule:
     # cron 以 UTC 計算，台灣時間 = UTC + 8
-    - cron: "40 0 * * 1-5"   # 台灣時間 08:40（開盤前，已有美股收盤資料）
-    - cron: "30 8 * * 1-5"   # 台灣時間 16:30（收盤後，三大法人資料通常已公布）
-  workflow_dispatch:          # 可在 Actions 頁面手動執行
+    - cron: "40 0 * * 1-5"       # 台灣時間 08:40（開盤前）
+    - cron: "*/15 1-5 * * 1-5"   # 台灣時間 09:00～13:59，每 15 分鐘（盤中快照）
+    - cron: "30 8 * * 1-5"       # 台灣時間 16:30（收盤後）
+  workflow_dispatch:
+    inputs:
+      stock_args:
+        description: "個股深入評價參數，例如 --max-price 30 --min-volume 500 --max-pe 15 --min-yield 4 --top 10 --growth（留空則用預設）"
+        required: false
+        default: ""
   push:
-    branches: [main]          # 推送程式時也會重跑一次
+    branches: [main]
 
 permissions:
   contents: read
@@ -21,14 +27,17 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TZ: Asia/Taipei             # 讓報告上的產生時間顯示台灣時間
-  # 選股條件，格式同 stock_screener.py 的參數；設成空字串 "" 就不跑選股
+  TZ: Asia/Taipei
+  # 預設的個股深入評價條件（自動排程使用）；設成 "" 則排程時不跑
   STOCK_ARGS: "--max-price 50 --top 10"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: v1
     steps:
       - uses: actions/checkout@v4
 
@@ -36,27 +45,39 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: v1/requirements.txt
 
       - name: 安裝套件
         run: pip install -r requirements.txt
 
-      - name: 大盤分析
-        run: python taiex_analyzer.py --no-open
+      - name: 大盤分析（網頁每 5 分鐘自動重新載入）
+        run: python taiex_analyzer.py --no-open --refresh 300
 
-      - name: 個股篩選（失敗不影響大盤報告）
-        if: env.STOCK_ARGS != ''
+      - name: 全市場篩選頁（上市、上櫃、ETF、權證、申請上市；條件在網頁上設定）
         continue-on-error: true
-        run: python stock_screener.py $STOCK_ARGS --no-open
+        run: python stock_universe.py --no-open
+
+      - name: 個股深入評價（財報＋技術＋新聞）
+        if: env.STOCK_ARGS != '' || inputs.stock_args != ''
+        continue-on-error: true
+        env:
+          STOCK_ARGS_IN: ${{ inputs.stock_args }}
+        run: |
+          ARGS="${STOCK_ARGS_IN:-$STOCK_ARGS}"
+          python stock_screener.py $ARGS --no-open
 
       - name: 組合網站
         run: |
           mkdir site
           cp taiex_report.html site/
-          if [ -f stock_report.html ]; then cp stock_report.html site/; fi
+          for f in universe.html stock_report.html; do
+            if [ -f "$f" ]; then cp "$f" site/; fi
+          done
           {
-            echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.8">'
-            echo "<h1>台股報告</h1><p>更新時間：$(date '+%Y-%m-%d %H:%M')（台灣時間）</p><ul><li><a href=\"taiex_report.html\">大盤 K 線與隔日行情分析</a></li>"
-            if [ -f site/stock_report.html ]; then echo '<li><a href="stock_report.html">個股篩選與評價</a></li>'; fi
+            echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="300"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.9">'
+            echo "<h1>台股報告</h1><p>更新時間：$(date '+%Y-%m-%d %H:%M')（台灣時間）｜排程快照，非逐筆即時</p><ul><li><a href=\"taiex_report.html\">大盤 K 線與隔日行情分析</a></li>"
+            if [ -f site/universe.html ]; then echo '<li><a href="universe.html">全市場篩選（可自訂條件：個股、ETF、權證、申請上市）</a></li>'; fi
+            if [ -f site/stock_report.html ]; then echo '<li><a href="stock_report.html">個股深入評價</a></li>'; fi
             echo '</ul><p style="color:#666">規則式計算，僅供研究參考，不構成投資建議。</p></body></html>'
           } > site/index.html
 
@@ -64,7 +85,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: v1/site
 
   deploy:
     needs: build
@@ -75,4 +96,3 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
-
