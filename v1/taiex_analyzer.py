@@ -55,8 +55,7 @@ POS_WORDS = ["大漲", "創高", "利多", "降息", "反彈", "買超", "樂觀
 NEG_WORDS = ["大跌", "重挫", "利空", "升息", "崩", "賣超", "衰退", "下修", "制裁", "戰爭", "衝突", "升溫", "恐慌", "轉弱", "破底", "收黑", "暴跌"]
 
 STATUS = []  # (來源, 是否成功, 訊息)
-NAV = ('<p style="font-size:15px">📍 <a href="taiex_report.html">大盤分析</a>｜<a href="universe.html"><b>🔎 全市場篩選（自訂條件）</b></a>'
-       '｜<a href="stock_report.html">個股深入評價</a></p>')
+NAV = ('<p style="font-size:15px">📍 <a href="taiex_report.html">大盤分析</a>｜<a href="universe.html"><b>🔎 全市場篩選與評價（自訂條件）</b></a></p>')
 
 
 def safe(name, fn, *a, **k):
