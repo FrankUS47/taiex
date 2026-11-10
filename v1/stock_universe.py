@@ -136,7 +136,7 @@ body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.6 system-ui,'Noto
 main{max-width:1100px;margin:0 auto;padding:12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin:10px 0}
 h1{font-size:21px}.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}label{display:block;font-size:12px;color:var(--mut)}
 input,select{width:100%;box-sizing:border-box;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
-button{background:transparent;color:var(--ac);border:1px solid var(--ac);border-radius:6px;padding:6px 14px;font:inherit;cursor:pointer;margin:4px 6px 0 0}button.on{background:var(--ac);color:#fff}
+input[type=checkbox]{width:auto;margin-right:4px}button{background:transparent;color:var(--ac);border:1px solid var(--ac);border-radius:6px;padding:6px 14px;font:inherit;cursor:pointer;margin:4px 6px 0 0}button.on{background:var(--ac);color:#fff}
 .w{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--bd);padding:5px 8px;text-align:left;white-space:nowrap}
 .up{color:var(--up)}.dn{color:var(--dn)}.note{font-size:13px;color:var(--mut)}a{color:var(--ac)}.chk label{display:inline;margin-right:10px;font-size:14px;color:var(--tx)}
 </style></head><body><main>
@@ -155,6 +155,10 @@ button{background:transparent;color:var(--ac);border:1px solid var(--ac);border-
 <div><label>排序</label><select id="sort" onchange="render()"><option value="vol">成交量（大到小）</option><option value="yld">殖利率（高到低）</option><option value="pe">本益比（低到高）</option><option value="up">漲幅（大到小）</option><option value="dn">跌幅（大到小）</option><option value="px">股價（低到高）</option></select></div></div>
 <div class="chk" style="margin-top:8px">類別：__KINDS__　市場：<label><input type="checkbox" class="m" value="上市" checked onchange="render()"> 上市</label><label><input type="checkbox" class="m" value="上櫃" checked onchange="render()"> 上櫃</label>
 <button onclick="reset()">重設條件</button></div>
+<div style="margin-top:10px;padding:10px;border:1px dashed var(--bd);border-radius:8px"><b>想對這組條件做「個股深入評價」（財報＋技術＋新聞）？</b>
+<p class="note">深入評價要在雲端抓財報與新聞，網頁內無法即時計算，所以這裡的篩選不會直接改變「個股深入評價」頁。請複製下面的參數，到 GitHub 的 Run workflow 貼進 stock_args 欄位執行，幾分鐘後該頁才會更新。深入評價只涵蓋上市個股，不含 ETF、上櫃；股價淨值比條件不會帶入。</p>
+<div class="g"><div><label>深入評價檔數</label><input id="top" type="number" value="10" min="1" max="30" oninput="render()"></div><div><label>&nbsp;</label><label style="font-size:14px;color:var(--tx)"><input type="checkbox" id="gr" onchange="render()">只留營收年成長為正</label></div></div>
+<p><code id="args" style="word-break:break-all"></code></p><button onclick="copyArgs()">複製參數</button><a id="gh" href="#" target="_blank" rel="noopener">開啟 Run workflow 頁面 →</a><p class="note" id="cm"></p></div>
 <p class="note" id="cnt"></p><div class="w"><table id="st"></table></div></section>
 
 <section id="tw" class="card" style="display:none"><div class="g"><div><label>關鍵字（代號、名稱、標的）</label><input id="q2" oninput="renderW()"></div>
@@ -171,7 +175,15 @@ const nv=id=>{const v=$(id).value.trim();return v===""?null:parseFloat(v)},fx=(x
 function tab(t){["s","w","a"].forEach(k=>$("t"+k).style.display=k===t?"":"none");document.querySelectorAll(".tb").forEach(b=>b.classList.toggle("on",b.dataset.t===t))}
 const SORT={vol:(a,b)=>b[6]-a[6],yld:(a,b)=>(b[8]==null?-1:b[8])-(a[8]==null?-1:a[8]),pe:(a,b)=>(a[7]==null||a[7]<=0?1e9:a[7])-(b[7]==null||b[7]<=0?1e9:b[7]),up:(a,b)=>b[5]-a[5],dn:(a,b)=>a[5]-b[5],px:(a,b)=>a[4]-b[4]};
 function reset(){["pmax","vmin","emax","ymin","bmax","q"].forEach(i=>$(i).value="");$("sort").value="vol";render()}
+function argStr(){const a=[],pm=nv("pmax"),vm=nv("vmin"),em=nv("emax"),ym=nv("ymin");
+ if(pm!=null)a.push("--max-price "+pm);a.push("--min-volume "+(vm==null?0:vm));
+ if(em!=null)a.push("--max-pe "+em);if(ym!=null)a.push("--min-yield "+ym);
+ a.push("--top "+(nv("top")||10));if($("gr").checked)a.push("--growth");return a.join(" ")}
+function copyArgs(){const t=$("args").textContent;
+ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(()=>{$("cm").textContent="已複製，請貼到 Run workflow 的 stock_args 欄位。"},()=>{$("cm").textContent="無法自動複製，請長按上方參數手動複製。"})}else{$("cm").textContent="請長按上方參數手動複製。"}}
+(function(){const h=location.hostname;if(h.endsWith(".github.io")){const u=h.split(".")[0],r=location.pathname.split("/")[1];if(r)$("gh").href="https://github.com/"+u+"/"+r+"/actions/workflows/taiex-report.yml";else $("gh").style.display="none"}else $("gh").style.display="none"})();
 function render(){
+ $("args").textContent=argStr();
  const pm=nv("pmax"),vm=nv("vmin"),em=nv("emax"),ym=nv("ymin"),bm=nv("bmax"),q=$("q").value.trim().toLowerCase();
  const ks=[...document.querySelectorAll(".k:checked")].map(x=>x.value),ms=[...document.querySelectorAll(".m:checked")].map(x=>x.value);
  const r=D.stocks.filter(s=>ks.includes(s[2])&&ms.includes(s[3])&&(pm==null||s[4]<=pm)&&(vm==null||s[6]>=vm)&&(em==null||(s[7]!=null&&s[7]>0&&s[7]<=em))&&(ym==null||(s[8]!=null&&s[8]>=ym))&&(bm==null||(s[9]!=null&&s[9]<=bm))&&(!q||(s[0]+s[1]).toLowerCase().includes(q))).sort(SORT[$("sort").value]);
