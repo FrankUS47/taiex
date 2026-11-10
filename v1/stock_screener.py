@@ -193,11 +193,11 @@ def tagcls(o):
 
 def render(filters, cand, results, charts=5):
     p = [f'<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>個股篩選與評價</title><style>{T.CSS}{EXTRA}</style></head><body><main>',
-         "<h1>🔍 個股篩選與評價分析</h1>",
+         "<h1>🔍 個股篩選與評價分析</h1>", T.NAV,
          f'<p class="note">產生時間：{dt.datetime.now():%Y-%m-%d %H:%M:%S}。評等為規則式量化評分，不是買賣建議。</p>']
     if filters:
         cnt = f"；初篩符合者共 <b>{len(cand)}</b> 檔" if cand is not None else ""
-        p.append(f'<div class="card"><h2>篩選條件</h2>{html.escape("；".join(filters))}{cnt}</div>')
+        p.append(f'<div class="card"><h2>篩選條件</h2>{html.escape("；".join(filters))}{cnt}<p class="note">這一頁的條件是固定的（由排程預設或手動執行時填的參數決定）。想自己調整股價、成交量、本益比、殖利率等條件，請點上方「全市場篩選」。</p></div>')
     if cand is not None and len(cand):
         rows = "".join(f'<tr><td>{r.Code}</td><td>{html.escape(str(r.Name))}</td><td>{r.price:,.2f}</td><td>{r.vol / 1000:,.0f}</td>'
                        f'<td>{"—" if pd.isna(r.pe) else f"{r.pe:.1f}"}</td><td>{"—" if pd.isna(r.yld) else f"{r.yld:.2f}"}</td>'

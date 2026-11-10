@@ -141,6 +141,7 @@ button{background:transparent;color:var(--ac);border:1px solid var(--ac);border-
 .up{color:var(--up)}.dn{color:var(--dn)}.note{font-size:13px;color:var(--mut)}a{color:var(--ac)}.chk label{display:inline;margin-right:10px;font-size:14px;color:var(--tx)}
 </style></head><body><main>
 <h1>🔎 全市場篩選（上市、上櫃、ETF、權證、申請上市）</h1>
+<p style="font-size:15px">📍 <a href="taiex_report.html">大盤分析</a>｜<a href="universe.html"><b>🔎 全市場篩選</b></a>｜<a href="stock_report.html">個股深入評價</a></p>
 <p class="note">資料日期：__DATE__（盤後資料，非即時報價）｜資料更新：__NOW__｜條件在你的瀏覽器即時篩選，不需重新執行。僅供研究參考，不構成投資建議。</p>
 <div><button class="tb on" data-t="s" onclick="tab('s')">個股／ETF</button><button class="tb" data-t="w" onclick="tab('w')">權證</button><button class="tb" data-t="a" onclick="tab('a')">申請上市</button></div>
 

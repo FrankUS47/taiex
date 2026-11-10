@@ -55,6 +55,8 @@ POS_WORDS = ["大漲", "創高", "利多", "降息", "反彈", "買超", "樂觀
 NEG_WORDS = ["大跌", "重挫", "利空", "升息", "崩", "賣超", "衰退", "下修", "制裁", "戰爭", "衝突", "升溫", "恐慌", "轉弱", "破底", "收黑", "暴跌"]
 
 STATUS = []  # (來源, 是否成功, 訊息)
+NAV = ('<p style="font-size:15px">📍 <a href="taiex_report.html">大盤分析</a>｜<a href="universe.html"><b>🔎 全市場篩選（自訂條件）</b></a>'
+       '｜<a href="stock_report.html">個股深入評價</a></p>')
 
 
 def safe(name, fn, *a, **k):
@@ -467,7 +469,7 @@ def build(refresh=0):
     p = ['<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>台股大盤分析</title>']
     if refresh:
         p.append(f'<meta http-equiv="refresh" content="{refresh}">')
-    p.append(f"<style>{CSS}</style></head><body><main><h1>📊 台股大盤 K 線與隔日行情分析</h1>")
+    p.append(f"<style>{CSS}</style></head><body><main><h1>📊 台股大盤 K 線與隔日行情分析</h1>{NAV}")
     p.append(f'<p class="note">本頁為定時更新的快照（非逐筆即時）。報告產生時間：{dt.datetime.now():%Y-%m-%d %H:%M:%S}　歷史資料至 {info["date"]}（Yahoo 可能有延遲）。美股等海外資料為其最近一個收盤/報價日。</p>')
     exp = expected_last_day()
     if info["date"] < exp:
