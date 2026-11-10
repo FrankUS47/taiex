@@ -5,9 +5,10 @@ name: taiex-report
 on:
   schedule:
     # cron 以 UTC 計算，台灣時間 = UTC + 8
-    - cron: "40 0 * * 1-5"       # 台灣時間 08:40（開盤前）
-    - cron: "*/15 1-5 * * 1-5"   # 台灣時間 09:00～13:59，每 15 分鐘（盤中快照）
-    - cron: "30 8 * * 1-5"       # 台灣時間 16:30（收盤後）
+    - cron: "40 0 * * 1-5"        # 台灣時間 08:40（開盤前，已有美股收盤資料）
+    - cron: "*/15 1-5 * * 1-5"    # 台灣時間 09:00～13:59，每 15 分鐘（盤中快照）
+    - cron: "30 8 * * 1-5"        # 台灣時間 16:30（收盤後）
+    - cron: "*/30 10-21 * * 1-5"  # 台灣時間 18:00～隔日 05:59，每 30 分鐘（更新美股、期貨、匯率，供隔日台股判斷）
   workflow_dispatch:
   push:
     branches: [main]
@@ -27,7 +28,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: v1
@@ -43,32 +44,48 @@ jobs:
       - name: 安裝套件
         run: pip install -r requirements.txt
 
-      # 還原上一次算好的個股評價（盤中快照不重算，直接沿用）
-      - name: 還原評價快取
+      # 還原上一次算好的個股評價與走勢統計
+      - name: 還原快取
         uses: actions/cache/restore@v4
         with:
           path: v1/cache
           key: scores-none
           restore-keys: scores-
 
+      # 依排程決定快取要沿用多久（小時）：
+      #   08:40、16:30 → 評價 3、走勢 1；盤中 15 分鐘 → 評價沿用、走勢約 30 分鐘更新；晚間 → 都沿用；手動或推送 → 評價 6、走勢 2
+      - name: 決定快取重用時數
+        id: ttl
+        run: |
+          S='${{ github.event.schedule }}'
+          case "$S" in
+            "40 0 * * 1-5"|"30 8 * * 1-5") echo "scores=3" >> "$GITHUB_OUTPUT"; echo "trends=1" >> "$GITHUB_OUTPUT" ;;
+            "*/15 1-5 * * 1-5")            echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=0.4" >> "$GITHUB_OUTPUT" ;;
+            "*/30 10-21 * * 1-5")          echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=9999" >> "$GITHUB_OUTPUT" ;;
+            *)                             echo "scores=6" >> "$GITHUB_OUTPUT"; echo "trends=2" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: 大盤分析（網頁每 5 分鐘自動重新載入）
         run: python taiex_analyzer.py --no-open --refresh 300
 
-      # 盤中 15 分鐘的排程：沿用快取；08:40 與 16:30 排程：快取超過 3 小時就重算；其他（手動、推送）：超過 6 小時才重算
       - name: 預先計算個股深入評價（約 200 檔，可能需要 10～20 分鐘）
         continue-on-error: true
-        run: python stock_scores.py --reuse-hours ${{ github.event.schedule == '*/15 1-5 * * 1-5' && 9999 || (github.event_name == 'schedule' && 3 || 6) }}
+        run: python stock_scores.py --reuse-hours ${{ steps.ttl.outputs.scores }}
+
+      - name: 走勢統計（連續漲跌日數、K 棒警示）
+        continue-on-error: true
+        run: python stock_trends.py --reuse-hours ${{ steps.ttl.outputs.trends }} --max-minutes 15
 
       - name: 全市場篩選與評價頁（條件在網頁上設定）
         continue-on-error: true
         run: python stock_universe.py --no-open
 
-      - name: 儲存評價快取
-        if: always() && hashFiles('v1/cache/scores.json') != ''
+      - name: 儲存快取
+        if: always() && hashFiles('v1/cache/*.json') != ''
         uses: actions/cache/save@v4
         with:
           path: v1/cache
-          key: scores-${{ hashFiles('v1/cache/scores.json') }}
+          key: scores-${{ hashFiles('v1/cache/*.json') }}
 
       - name: 組合網站
         run: |
@@ -78,7 +95,7 @@ jobs:
           {
             echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="300"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.9">'
             echo "<h1>台股報告</h1><p>更新時間：$(date '+%Y-%m-%d %H:%M')（台灣時間）｜排程快照，非逐筆即時</p><ul><li><a href=\"taiex_report.html\">大盤 K 線與隔日行情分析</a></li>"
-            if [ -f site/universe.html ]; then echo '<li><a href="universe.html">全市場篩選與評價（自訂條件：個股、ETF、權證、申請上市）</a></li>'; fi
+            if [ -f site/universe.html ]; then echo '<li><a href="universe.html">全市場篩選與評價（類股、連漲連跌、K 棒警示、評價）</a></li>'; fi
             echo '</ul><p style="color:#666">規則式計算，僅供研究參考，不構成投資建議。</p></body></html>'
           } > site/index.html
 
