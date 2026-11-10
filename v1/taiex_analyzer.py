@@ -42,6 +42,8 @@ MARKETS = {  # 名稱: Yahoo 代號
     "日經225": "^N225", "韓國KOSPI": "^KS11", "恆生指數": "^HSI",
     "美元/台幣": "TWD=X", "美元指數": "DX-Y.NYB", "美國10年債殖利率": "^TNX",
     "WTI原油": "CL=F", "黃金": "GC=F",
+    "S&P500期貨": "ES=F", "那斯達克期貨": "NQ=F", "道瓊期貨": "YM=F", "EWT台灣ETF(美股)": "EWT",
+    "德國DAX": "^GDAXI", "英國富時100": "^FTSE", "日圓/美元": "JPY=X", "歐元/美元": "EURUSD=X", "人民幣/美元(離岸)": "CNH=X",
 }
 NEWS_TOPICS = {
     "台股": "台股 大盤",
@@ -241,6 +243,14 @@ def macro_score(Q, rt, inst, fut, news_data, last_date):
     if fut and "day" in fut and fut["day"]["date"].replace("-", "") == last_date.strftime("%Y%m%d"):
         b = fut["day"]["last"] - float(HIST_LAST_CLOSE)
         add(1 if b > 0 else -1, f"期現貨價差 {b:+.0f} 點（{'正價差偏多' if b > 0 else '逆價差偏空'}）")
+    fu = [g(k)["pct"] for k in ("S&P500期貨", "那斯達克期貨") if g(k)]
+    if fu:
+        add(sc(float(np.mean(fu)), 0.5), f"美股期貨(ES/NQ)平均 {np.mean(fu):+.2f}%（美股收盤後仍近24小時交易，晚間最即時）")
+    if g("EWT台灣ETF(美股)"):
+        add(sc(g("EWT台灣ETF(美股)")["pct"], 1), f"EWT(美股掛牌的台灣ETF) {g('EWT台灣ETF(美股)')['pct']:+.2f}%")
+    eu = [g(k)["pct"] for k in ("德國DAX", "英國富時100") if g(k)]
+    if eu:
+        add(sc(float(np.mean(eu)), 0.7), f"歐股(德英)平均 {np.mean(eu):+.2f}%")
     if g("費城半導體"):
         add(sc(g("費城半導體")["pct"], 1) * 2, f"費半 {g('費城半導體')['pct']:+.2f}%（權重加倍）")
     if g("台積電ADR"):
@@ -480,6 +490,10 @@ def build(refresh=0):
     pc = chg / cur["prev"] * 100
     p.append(f'<div class="big">加權指數 <b>{cur["price"]:,.2f}</b> <span class="{cls(chg)}">{chg:+,.2f}（{pc:+.2f}%）</span></div>')
     p.append(f'<div class="note">來源：{cur["src"]}｜資料時間：{cur["time"]}｜昨收 {cur["prev"]:,.2f}</div>')
+    chips = "　".join(f'{k} <span class="{cls(Q[k]["pct"])}">{Q[k]["pct"]:+.2f}%</span>' for k in
+                    ("S&P500", "那斯達克", "費城半導體", "台積電ADR", "EWT台灣ETF(美股)", "S&P500期貨", "那斯達克期貨", "VIX恐慌指數", "美元/台幣") if k in Q)
+    if chips:
+        p.append(f'<div class="note">海外最新（相對前一收盤，Yahoo 可能延遲）：{chips}<br>美股現金交易時段約台灣時間 22:30～05:00（冬令；夏令為 21:30～04:00），期貨近 24 小時交易，晚上的隔日台股判斷以美股、期貨與 EWT 為主。</div>')
     p.append(f'<div class="big">隔日預判：<span class="{c}">{label}</span>（總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
     p.append(f'<p>近20日壓力約 <b>{info["hi"]:,.0f}</b>，支撐約 <b>{info["lo"]:,.0f}</b>；有效突破壓力偏多，跌破支撐轉弱。</p></div>')
     p.append('<div class="card"><h2>K 線圖</h2>')
