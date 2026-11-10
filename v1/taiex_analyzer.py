@@ -324,12 +324,107 @@ def li(R):
     return "".join(f"<li>{'🔺' if p > 0 else '🔻' if p < 0 else '➖'} {html.escape(t)}（{p:+d}）</li>" for p, t in R)
 
 
+def twse_fill(df):
+    """Yahoo 的日K若落後，用證交所「加權指數歷史」補上較新的日K（無成交量，以 0 表示）。"""
+    last, today, add = df.index[-1], dt.date.today(), []
+    for y, m in sorted({(last.year, last.month), (today.year, today.month)}):
+        j = requests.get("https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST",
+                         params={"date": f"{y}{m:02d}01", "response": "json"}, headers=UA, timeout=12).json()
+        if j.get("stat") != "OK":
+            continue
+        for r in j.get("data", []):
+            yy, mm, dd = r[0].split("/")
+            d = pd.Timestamp(int(yy) + 1911, int(mm), int(dd))
+            if d > last:
+                o, h, l, c = (num(x) for x in r[1:5])
+                if None not in (o, h, l, c):
+                    add.append((d, o, h, l, c))
+    if not add:
+        return df, 0
+    ext = pd.DataFrame(add, columns=["Date", "Open", "High", "Low", "Close"]).set_index("Date")
+    ext = ext[~ext.index.duplicated()]
+    ext["Volume"] = 0.0
+    return pd.concat([df, ext]).sort_index(), len(ext)
+
+
+def expected_last_day():
+    """依目前（台灣）時間估計最新應有的交易日；未考慮國定假日。"""
+    now = dt.datetime.now()
+    d = now.date()
+    if now.hour < 14:
+        d -= dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def kbar(df):
+    """K棒型態判讀（紅K＝收盤高於開盤，黑K＝收盤低於開盤）。以最近 1～3 根日K判斷。"""
+    d = df.tail(25)
+    o, h, l, c = (d[k].to_numpy(float) for k in ("Open", "High", "Low", "Close"))
+    n, R = len(d), []
+    add = lambda p, t: R.append((p, t))
+    body, rng = np.abs(c - o), h - l
+    up_s, lo_s = h - np.maximum(o, c), np.minimum(o, c) - l
+    red, blk = c > o, c < o
+    avg = body[-21:-1].mean() if n > 5 else body.mean()
+    r = rng[-1] if rng[-1] > 0 else 1e-9
+    dn_trend = n > 5 and c[-1] < c[-6]
+    kind = "紅K" if red[-1] else "黑K" if blk[-1] else "平盤K"
+    add(0, f"最新一根為{kind}：開 {o[-1]:,.0f}／高 {h[-1]:,.0f}／低 {l[-1]:,.0f}／收 {c[-1]:,.0f}；實體 {body[-1]:,.0f} 點，上影線 {up_s[-1]:,.0f}，下影線 {lo_s[-1]:,.0f}（近20日平均實體 {avg:,.0f}）")
+    long_ = body[-1] >= 1.5 * avg and body[-1] >= 0.6 * r
+    if long_ and red[-1]:
+        add(1, "長紅K：實體明顯大於平均，買盤強勢")
+    elif long_ and blk[-1]:
+        add(-1, "長黑K：實體明顯大於平均，賣壓沉重")
+    if body[-1] <= 0.1 * r:
+        add(0, "十字星：多空僵持，常是變盤訊號，需看隔日方向確認")
+    elif lo_s[-1] >= 2 * body[-1] and up_s[-1] <= 0.3 * r:
+        add(1, "錘子線（下跌後下影線長，有買盤承接）") if dn_trend else add(-1, "吊人線（上漲後下影線長，留意高檔轉折）")
+    elif up_s[-1] >= 2 * body[-1] and lo_s[-1] <= 0.3 * r:
+        add(-1, "流星線（上漲後上影線長，上檔賣壓大）") if not dn_trend else add(1, "倒錘線（下跌後出現試探買盤，需隔日確認）")
+    if n >= 2:
+        if blk[-2] and red[-1] and o[-1] <= c[-2] and c[-1] >= o[-2] and body[-1] > body[-2]:
+            add(2, "多頭吞噬：紅K實體完全包住前一根黑K，止跌轉強訊號")
+        elif red[-2] and blk[-1] and o[-1] >= c[-2] and c[-1] <= o[-2] and body[-1] > body[-2]:
+            add(-2, "空頭吞噬：黑K實體完全包住前一根紅K，轉弱訊號")
+        elif body[-2] >= 1.2 * avg and max(o[-1], c[-1]) <= max(o[-2], c[-2]) and min(o[-1], c[-1]) >= min(o[-2], c[-2]) and body[-1] < 0.6 * body[-2]:
+            add(0, "母子（孕育）線：本根在前一根長K實體內，動能收斂，留意變盤")
+        if l[-1] > h[-2]:
+            add(1, "向上跳空缺口：留意缺口是否被回補")
+        elif h[-1] < l[-2]:
+            add(-1, "向下跳空缺口：留意缺口是否被回補")
+    if n >= 3:
+        mid1 = (o[-3] + c[-3]) / 2
+        if blk[-3] and body[-3] >= 1.2 * avg and body[-2] <= 0.4 * avg and max(o[-2], c[-2]) <= c[-3] and red[-1] and c[-1] > mid1:
+            add(2, "晨星：長黑、星線、長紅組合，底部反轉訊號")
+        elif red[-3] and body[-3] >= 1.2 * avg and body[-2] <= 0.4 * avg and min(o[-2], c[-2]) >= c[-3] and blk[-1] and c[-1] < mid1:
+            add(-2, "夜星：長紅、星線、長黑組合，頭部反轉訊號")
+        if all(red[-3:]) and c[-3] < c[-2] < c[-1] and o[-3] <= o[-2] <= c[-3] and o[-2] <= o[-1] <= c[-2]:
+            add(2, "紅三兵：連三紅K步步墊高，多方延續（漲多時留意追高風險）")
+        elif all(blk[-3:]) and c[-3] > c[-2] > c[-1] and c[-3] <= o[-2] <= o[-3] and c[-2] <= o[-1] <= o[-2]:
+            add(-2, "黑三鴉：連三黑K步步走低，空方延續")
+    k, kind_s = 0, red[-1]
+    for i in range(n - 1, -1, -1):
+        if (red[i] if kind_s else blk[i]):
+            k += 1
+        else:
+            break
+    if k >= 4 and (red[-1] or blk[-1]):
+        add(0, f"連續 {k} 根{'紅' if kind_s else '黑'}K，" + ("漲多留意乖離過大與獲利了結" if kind_s else "跌深留意是否出現反彈"))
+    return R
+
+
 def build(refresh=0):
     global HIST_LAST_CLOSE
     STATUS.clear()
     df = safe("加權指數歷史(Yahoo ^TWII)", hist, "^TWII", "6y")
     if df is None or len(df) < 60:
         raise RuntimeError("無法取得加權指數歷史資料，請檢查網路或稍後再試（詳見上方錯誤訊息）")
+    n_fill = 0
+    res = safe("證交所加權指數補最新日K(MI_5MINS_HIST)", twse_fill, df)
+    if res:
+        df, n_fill = res
     HIST_LAST_CLOSE = float(df["Close"].iloc[-1])
     Q = {k: safe(f"{k}({s})", quote, s) for k, s in MARKETS.items()}
     Q = {k: v for k, v in Q.items() if v}
@@ -339,9 +434,11 @@ def build(refresh=0):
     nws = {k: safe(f"新聞:{k}", news, q) for k, q in NEWS_TOPICS.items()}
 
     T, info = tech(df)
+    K = kbar(df)
     M, N = macro_score(Q, rt, inst, fut, nws, info["date"])
     ts, ms, ns = (sum(p for p, _ in x) for x in (T, M, N))
-    tot = ts + ms + ns
+    ks = max(-3, min(3, sum(p for p, _ in K)))
+    tot = ts + ks + ms + ns
     label, c = ("偏多", "up") if tot >= 6 else ("小幅偏多", "up") if tot >= 2 else ("區間震盪", "") if tot >= -1 else \
         ("小幅偏空", "dn") if tot >= -5 else ("偏空", "dn")
 
@@ -350,11 +447,22 @@ def build(refresh=0):
         p.append(f'<meta http-equiv="refresh" content="{refresh}">')
     p.append(f"<style>{CSS}</style></head><body><main><h1>📊 台股大盤 K 線與隔日行情分析</h1>")
     p.append(f'<p class="note">產生時間：{dt.datetime.now():%Y-%m-%d %H:%M:%S}　歷史資料至 {info["date"]}（Yahoo 可能有延遲）。美股等海外資料為其最近一個收盤/報價日。</p>')
+    exp = expected_last_day()
+    if info["date"] < exp:
+        p.append(f'<p class="bad">⚠ 日K最新只到 {info["date"]}，依今天時間應至少到 {exp}（若剛好遇到國定假日則屬正常）。資料可能落後，分析請留意時效。</p>')
+    if n_fill:
+        p.append(f'<p class="note">已用證交所資料補上 {n_fill} 根較新的日K（證交所資料沒有成交量，補上的K棒量能以 0 顯示）。</p>')
     p.append('<div class="card">')
     if rt:
         p.append(f'<div>盤中即時（證交所 {rt["time"]}）：<b>{rt["price"]:,.2f}</b> <span class="{cls(rt["pct"])}">{rt["pct"]:+.2f}%</span></div>')
-    p.append(f'<div class="big">隔日預判：<span class="{c}">{label}</span>（總分 {tot:+d}＝技術面 {ts:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
+    p.append(f'<div class="big">隔日預判：<span class="{c}">{label}</span>（總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
     p.append(f'<p>近20日壓力約 <b>{info["hi"]:,.0f}</b>，支撐約 <b>{info["lo"]:,.0f}</b>；有效突破壓力偏多，跌破支撐轉弱。</p></div>')
+    p.append('<div class="card"><h2>K 線圖</h2>')
+    p.append(chart(df, "日K（月線 MA20／季線 MA60／年線 MA240）", [5, 20, 60, 240], ["週線MA5", "月線MA20", "季線MA60", "年線MA240"], 250, True, True))
+    p.append(chart(resample(df, "W-FRI"), "週K", [5, 13, 26, 52], ["MA5週", "MA13週(季)", "MA26週(半年)", "MA52週(年)"], 156))
+    p.append(chart(resample(df, "ME"), "月K", [3, 6, 12, 24], ["MA3月", "MA6月", "MA12月(年)", "MA24月"], 120))
+    p.append("</div>")
+    p.append(f'<div class="card"><h2>K棒型態分析（日K，看最近 1～3 根）</h2><ul>{li(K)}</ul><p class="note">型態需搭配所處位置與量能判讀，單一型態可靠度有限；K棒型態分數最多計 ±3 分。</p></div>')
     p.append(f'<div class="card"><h2>技術面（日K）</h2><ul>{li(T)}</ul></div>')
     p.append(f'<div class="card"><h2>國際、期貨、匯率與資金面</h2><ul>{li(M) or "<li>無資料</li>"}</ul>')
     p.append(f'<h2>消息面</h2><ul>{li(N) or "<li>無新聞資料</li>"}</ul></div>')
@@ -368,11 +476,6 @@ def build(refresh=0):
     for k, items in nws.items():
         if items:
             p.append(f"<b>{k}</b><ul>" + "".join(f'<li><a href="{html.escape(i["link"])}" target="_blank" rel="noopener">{html.escape(i["title"])}</a> <span class="note">{html.escape(i["date"])}</span></li>' for i in items) + "</ul>")
-    p.append("</div>")
-    p.append('<div class="card"><h2>K 線圖</h2>')
-    p.append(chart(df, "日K（月線 MA20／季線 MA60／年線 MA240）", [5, 20, 60, 240], ["週線MA5", "月線MA20", "季線MA60", "年線MA240"], 250, True, True))
-    p.append(chart(resample(df, "W-FRI"), "週K", [5, 13, 26, 52], ["MA5週", "MA13週(季)", "MA26週(半年)", "MA52週(年)"], 156))
-    p.append(chart(resample(df, "ME"), "月K", [3, 6, 12, 24], ["MA3月", "MA6月", "MA12月(年)", "MA24月"], 120))
     p.append("</div>")
     st = "".join(f'<tr><td>{html.escape(n)}</td><td class="{"dn" if ok else "bad"}">{"成功" if ok else "失敗"}</td><td>{html.escape(m)}</td></tr>' for n, ok, m in STATUS)
     p.append(f'<div class="card"><h2>資料來源狀態</h2><table>{st}</table><p class="note">失敗的來源不會被估算或補數字，該項不計入評分。</p></div>')
