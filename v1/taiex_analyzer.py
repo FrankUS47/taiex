@@ -32,6 +32,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import chart_patterns as CP
+import predictor as PR
 
 UA = {"User-Agent": "Mozilla/5.0 (compatible; TaiexAnalyzer/1.0)"}
 UP, DN = "#d6293e", "#1a9a52"          # 台股習慣：紅漲綠跌
@@ -60,7 +61,9 @@ POS_WORDS = ["大漲", "創高", "利多", "降息", "反彈", "買超", "樂觀
 NEG_WORDS = ["大跌", "重挫", "利空", "升息", "崩", "賣超", "衰退", "下修", "制裁", "戰爭", "衝突", "升溫", "恐慌", "轉弱", "破底", "收黑", "暴跌"]
 
 STATUS = []  # (來源, 是否成功, 訊息)
-NAV = ('<p style="font-size:15px">📍 <a href="taiex_report.html">大盤分析</a>｜<a href="universe.html"><b>🔎 全市場篩選與評價（自訂條件）</b></a></p>')
+NAV = ('<p style="font-size:15px">📍 <a class="nv" href="taiex_report.html">大盤分析</a>｜<a class="nv" href="universe.html"><b>🔎 全市場篩選與評價（自訂條件）</b></a></p>')
+NAVJS = ("<script>document.querySelectorAll('a.nv').forEach(function(a){a.addEventListener('click',function(e){e.preventDefault();"
+         "location.href=a.getAttribute('href').split('?')[0]+'?t='+Date.now()})})</script>")
 
 
 def safe(name, fn, *a, **k):
@@ -314,17 +317,35 @@ def resample(df, rule):
         return df.resample(rule.replace("ME", "M")).agg(agg).dropna()
 
 
-def chart(df, title, mas, names, show, daily=False, first=False, overlays=None):
+RANGE_JS = r"""
+(function(){var gd=document.getElementById('{plot_id}');if(!gd)return;
+function T(x){return new Date(String(x).replace(' ','T')).getTime()}
+function fit(a,b){var c=gd.data[0],lo=1e18,hi=-1e18,vm=0,bar=null,i;
+ for(i=0;i<gd.data.length;i++){if(gd.data[i].type==='bar'){bar=gd.data[i];break}}
+ for(i=0;i<c.x.length;i++){var t=T(c.x[i]);if((a==null||t>=a)&&(b==null||t<=b)){if(c.low[i]<lo)lo=c.low[i];if(c.high[i]>hi)hi=c.high[i];if(bar&&bar.y[i]>vm)vm=bar.y[i]}}
+ if(lo>hi)return;var p=(hi-lo)*0.05||1;Plotly.relayout(gd,{'yaxis.range':[lo-p,hi+p],'yaxis2.range':[0,(vm||1)*1.15]})}
+gd.on('plotly_relayout',function(ev){var r0=null,r1=null,k;
+ for(k in ev){if(/^xaxis2?\.range\[0\]$/.test(k))r0=ev[k];if(/^xaxis2?\.range\[1\]$/.test(k))r1=ev[k];if(/^xaxis2?\.range$/.test(k)){r0=ev[k][0];r1=ev[k][1]}}
+ if(r0!=null&&r1!=null){fit(T(r0),T(r1))}else if(ev['xaxis.autorange']||ev['xaxis2.autorange']){fit(null,null)}});
+gd.fitRange=fit;})();
+"""
+MA_ALL = ["#e0a800", "#2b6cb0", "#9b59b6", "#e67e22", "#16a085", "#7f8c8d"]
+
+
+def chart(df, title, mas, names, show, daily=False, first=False, overlays=None, visible=None, buttons=None, intraday=False):
+    """K 線圖：預設顯示最近 show 根，但保留全部歷史，可用上方按鈕、下方滑桿、拖曳縮放調整時間範圍；
+    Y 軸會隨可見範圍自動縮放；圖例點一下可顯示或隱藏均線。"""
     d = df.copy()
     for n, nm in zip(mas, names):
         d[nm] = d["Close"].rolling(n).mean()
-    d = d.tail(show)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.76, 0.24], vertical_spacing=0.03)
     fig.add_trace(go.Candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"], name="K線",
                                  increasing_line_color=UP, increasing_fillcolor=UP,
                                  decreasing_line_color=DN, decreasing_fillcolor=DN), 1, 1)
-    for nm, col in zip(names, MA_COLORS):
-        fig.add_trace(go.Scatter(x=d.index, y=d[nm], name=nm, line=dict(width=1.5, color=col)), 1, 1)
+    for k, nm in enumerate(names):
+        on = visible is None or nm in visible
+        fig.add_trace(go.Scatter(x=d.index, y=d[nm], name=nm, visible=True if on else "legendonly",
+                                 line=dict(width=1.5, color=MA_ALL[k % len(MA_ALL)])), 1, 1)
     fig.add_trace(go.Bar(x=d.index, y=d["Volume"], name="成交量",
                          marker_color=[UP if c >= o else DN for o, c in zip(d["Open"], d["Close"])]), 2, 1)
     for pt in overlays or []:
@@ -332,11 +353,35 @@ def chart(df, title, mas, names, show, daily=False, first=False, overlays=None):
             xs = [df.index[min(max(i, 0), len(df) - 1)] for i, _ in ln["pts"]]
             fig.add_trace(go.Scatter(x=xs, y=[y for _, y in ln["pts"]], mode="lines", name=f'{pt["name"]}·{ln["label"]}',
                                      line=dict(width=2, dash="dash", color="#8e44ad")), 1, 1)
-    fig.update_layout(title=title, height=640, template="plotly_white", xaxis_rangeslider_visible=False,
-                      hovermode="x unified", legend=dict(orientation="h"), margin=dict(l=50, r=20, t=60, b=30))
-    if daily:
+    vis = d.tail(show)
+    lo, hi = float(vis["Low"].min()), float(vis["High"].max())
+    pad = (hi - lo) * 0.05 or 1.0
+    vmax = float(vis["Volume"].max() or 1)
+    x0, x1 = vis.index[0], vis.index[-1]
+    span = (x1 - x0) * 0.02 if x1 > x0 else pd.Timedelta(days=1)
+    btns = [dict(count=c, label=l, step=st, stepmode="backward") for c, st, l in (buttons or [])] + [dict(step="all", label="全部")]
+    fig.update_layout(title=title, height=700, template="plotly_white", hovermode="x unified",
+                      legend=dict(orientation="h"), margin=dict(l=50, r=20, t=60, b=30))
+    fig.update_xaxes(range=[x0, x1 + span])
+    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
+    fig.update_xaxes(rangeslider=dict(visible=True, thickness=0.05), rangeselector=dict(buttons=btns), row=2, col=1)
+    fig.update_yaxes(range=[lo - pad, hi + pad], row=1, col=1)
+    fig.update_yaxes(range=[0, vmax * 1.15], row=2, col=1)
+    if intraday:
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"]), dict(bounds=[13.5, 9], pattern="hour")])
+    elif daily:
         fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-    return fig.to_html(full_html=False, include_plotlyjs="cdn" if first else False)
+    h = fig.to_html(full_html=False, include_plotlyjs="cdn" if first else False, post_script=RANGE_JS)
+    return f'<div class="kc{" intra" if intraday else ""}" data-x0="{x0}" data-x1="{x1 + span}">{h}</div>'
+
+
+def intraday5():
+    """加權指數 5 分鐘K（近 5 個交易日）；用於「當日」走勢。"""
+    h = yf.Ticker("^TWII").history(period="5d", interval="5m")
+    if h is None or h.empty:
+        raise RuntimeError("Yahoo 無 5 分鐘資料（非開盤時段或資料源限制）")
+    h.index = pd.to_datetime(h.index).tz_localize(None)
+    return h[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
 
 
 # ───────────────────────── 報告 ─────────────────────────
@@ -352,6 +397,63 @@ def cls(x):
 
 def li(R):
     return "".join(f"<li>{'🔺' if p > 0 else '🔻' if p < 0 else '➖'} {html.escape(t)}（{p:+d}）</li>" for p, t in R)
+
+
+LIVE_HTML = """<div class="card" id="livecard"><div id="stale" style="display:none;background:#fff3cd;border:1px solid #e0a800;border-radius:6px;padding:8px;margin-bottom:8px"></div>
+<b>⚡ 瀏覽器即時報價</b> <span class="note">（打開本頁時由你的瀏覽器直接向 Yahoo 取得；若來源網站不允許，會顯示無法連線，並以上方報告產生時的資料為準）</span>
+<div id="liveq" class="note" style="margin-top:6px">載入中…</div>
+<button onclick="hardReload()">重新載入最新版</button></div>
+<script>
+var GEN=new Date("__GEN__"),REFRESH=__REFRESH__;
+function hardReload(){location.replace(location.pathname+"?t="+Date.now())}
+function age(){var m=Math.round((Date.now()-GEN.getTime())/60000),el=document.getElementById("stale");
+ if(m>20){el.style.display="";el.innerHTML="⚠ 這份報告是 <b>"+m+"</b> 分鐘前產生的（"+GEN.toLocaleString()+"）。可能是瀏覽器暫存的舊頁面，請按「重新載入最新版」；若仍然很舊，代表 GitHub 排程尚未更新（排程可能延遲）。"}else{el.style.display="none"}}
+age();setInterval(age,30000);if(REFRESH>0)setTimeout(hardReload,REFRESH*1000);
+var SYMS=[["^TWII","加權指數"],["TSM","台積電ADR"],["EWT","EWT台灣ETF"],["ES=F","S&P500期貨"],["NQ=F","那斯達克期貨"],["TWD=X","美元/台幣"]];
+function one(s){return fetch("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(s[0])+"?interval=1m&range=1d").then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){var m=j.chart.result[0].meta,p=m.regularMarketPrice,y=m.chartPreviousClose,c=p-y,k=c/y*100;
+ return "<span style='margin-right:14px'>"+s[1]+" <b>"+p.toLocaleString(undefined,{maximumFractionDigits:2})+"</b> <span class='"+(c>0?"up":c<0?"dn":"")+"'>"+(c>0?"+":"")+c.toFixed(2)+"（"+(k>0?"+":"")+k.toFixed(2)+"%）</span> <span class='note'>"+new Date(m.regularMarketTime*1000).toLocaleTimeString()+"</span></span>"})}
+function live(){Promise.all(SYMS.map(function(s){return one(s).catch(function(){return null})})).then(function(a){var ok=a.filter(Boolean);
+ document.getElementById("liveq").innerHTML=ok.length?ok.join("")+"<div class='note'>來源：Yahoo（可能延遲）。每 20 秒更新。</div>":"瀏覽器無法直連即時報價（來源網站限制或網路問題）。請參考報告產生時的資料，或在自己的電腦執行 live_server.py 取得即時報價與五檔。"})}
+live();setInterval(live,20000);
+</script>"""
+RANGE_HTML = """<div class="note" style="margin:6px 0">時間範圍：<input type="date" id="rg1"> ～ <input type="date" id="rg2"> <button onclick="applyRange()">套用</button>
+　或最近 <input type="number" id="rgn" value="60" min="5" style="width:70px"> 根K線 <button onclick="lastN()">套用</button> <button onclick="resetRange()">恢復預設</button><br>
+每張圖上方有 5日／1個月／3個月／1年／全部 按鈕，下方的滑桿可拖曳調整範圍；圖例點一下可顯示或隱藏均線（日K另有 10日、半年線 MA120）。「當日走勢」是 5 分鐘K，預設顯示最近一個交易日。</div>
+<script>
+function kcs(){return Array.prototype.slice.call(document.querySelectorAll('.kc:not(.intra) .plotly-graph-div'))}
+function applyRange(){var s=document.getElementById('rg1').value,e=document.getElementById('rg2').value;if(!s||!e)return;kcs().forEach(function(g){Plotly.relayout(g,{'xaxis.range':[s,e],'xaxis2.range':[s,e]})})}
+function lastN(){var n=+document.getElementById('rgn').value||60;kcs().forEach(function(g){var x=g.data[0].x,s=x[Math.max(0,x.length-n)],e=x[x.length-1];Plotly.relayout(g,{'xaxis.range':[s,e],'xaxis2.range':[s,e]})})}
+function resetRange(){document.querySelectorAll('.kc').forEach(function(w){var g=w.querySelector('.plotly-graph-div');if(!g)return;var a=w.dataset.x0,b=w.dataset.x1;Plotly.relayout(g,{'xaxis.range':[a,b],'xaxis2.range':[a,b]})})}
+</script>"""
+
+
+def pred_card(d, w, entry, weighted, now, pc, cur_today, tot):
+    """預測追蹤與自動調整卡片。"""
+    wst = PR.weights(d)[1]
+    rows = ""
+    for k in PR.COMPS:
+        hit = wst[k]["hit"]
+        rows += f'<tr><td>{k}</td><td>{w[k]:.2f}</td><td>{"—" if hit is None else format(hit * 100, ".0f") + "%"}</td><td>{wst[k]["n"]}</td></tr>'
+    done = [e for e in d["entries"] if e.get("actual_pct") is not None][-10:][::-1]
+    hist = "".join(
+        f'<tr><td>{e["for_date"]}</td><td>{e["label"]}（{e.get("weighted", e["raw"]):+.1f}）</td><td class="{cls(e["actual_pct"])}">{e["actual_pct"]:+.2f}%</td>'
+        f'<td>{"—" if abs(e.get("weighted", e["raw"])) < 2 else ("命中" if (e.get("weighted", e["raw"]) > 0) == (e["actual_pct"] > 0) else "未命中")}</td></tr>' for e in done)
+    live = ""
+    tgt = PR.target_date(now)
+    if cur_today and tgt == now.date() and PR.session_fraction(now) > 0 and entry:
+        adj, wl, lp = PR.live_adjust(entry["weighted"], pc, now)
+        live = (f'<p><b>盤中修正：</b>盤前預判 {entry["label"]}（加權 {entry["weighted"]:+.1f}）；目前盤中 <span class="{cls(pc)}">{pc:+.2f}%</span>（相當 {lp:+.1f} 分）；'
+                f'依已開盤時間比例混合（實際走勢占 {wl * 100:.0f}%）→ <b>修正後 {PR.label_of(adj)}（{adj:+.1f}）</b>。</p>')
+    _, _, info = PR.weights(d)
+    return ('<div class="card"><h2>預測追蹤與自動調整</h2>'
+            f'<p>目標交易日 <b>{tgt}</b>：原始總分 {tot:+d}，依各構面權重加權後 <b>{weighted:+.1f}</b> → <b>{PR.label_of(weighted)}</b>。'
+            f'已結算 {info["done"]} 天；方向性預判（|分數|≥2）{info["calls"]} 次，命中 {info["ok"]} 次。</p>{live}'
+            '<table><tr><th>構面</th><th>目前權重</th><th>方向命中率</th><th>樣本數</th></tr>' + rows + '</table>'
+            + ('<h3 style="font-size:15px;margin:10px 0 4px">最近已結算的預判（預判＝目標日開盤前最後一次）</h3><table><tr><th>日期</th><th>預判</th><th>實際漲跌</th><th>結果</th></tr>' + hist + '</table>' if hist else
+               '<p class="note">還沒有已結算的預判。每個目標交易日收盤後（約 13:45 之後）才會用實際漲跌結算並調整權重。</p>')
+            + '<p class="note">自動調整方式：每次產生報告都記錄當時五個構面的分數；目標日收盤後比對實際漲跌，算出各構面的方向命中率，'
+              '權重 = 1 ＋（2×命中率−1，限制在 0.5～1.5）×（樣本數/20 最多 1），樣本少時幾乎維持 1.0。盤中則把盤前預判與目前實際漲跌依已開盤時間比例混合。'
+              '這只是依自己歷史命中率做的簡單校準，樣本少時不具統計意義，不保證越調越準；刪除 cache/predictions.json 即重置。</p></div>')
 
 
 def yahoo_intraday():
@@ -372,6 +474,20 @@ def current_quote(df, rt, yi):
         prev = float(c.iloc[-2]) if (yi["date"] == df.index[-1].date() and len(c) > 1) else float(c.iloc[-1])
         return {"price": yi["price"], "prev": prev, "src": "Yahoo 盤中分鐘（可能延遲）", "time": yi["time"]}
     return {"price": float(c.iloc[-1]), "prev": float(c.iloc[-2]), "src": "最新日K收盤", "time": str(df.index[-1].date())}
+
+
+def fill_from_5m(df, d5):
+    """日K落後時，用 Yahoo 近 5 日的 5 分鐘K彙整成日K補上（含盤中尚未收盤的當日K）。回傳 (df, 補了幾根)。"""
+    last = df.index[-1]
+    rows = []
+    for day, x in d5.groupby(d5.index.normalize()):
+        if day > last:
+            rows.append((day, float(x["Open"].iloc[0]), float(x["High"].max()), float(x["Low"].min()),
+                         float(x["Close"].iloc[-1]), float(x["Volume"].sum())))
+    if not rows:
+        return df, 0
+    ext = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"]).set_index("Date")
+    return pd.concat([df, ext]).sort_index(), len(ext)
 
 
 def twse_fill(df):
@@ -475,6 +591,12 @@ def build(refresh=0):
     res = safe("證交所加權指數補最新日K(MI_5MINS_HIST)", twse_fill, df)
     if res:
         df, n_fill = res
+    d5 = safe("Yahoo加權指數5分鐘K(當日走勢)", intraday5)
+    if d5 is not None and df.index[-1].date() < expected_last_day():
+        r5 = safe("Yahoo 5分鐘K彙整補日K", fill_from_5m, df, d5)
+        if r5:
+            df, n5 = r5
+            n_fill += n5
     HIST_LAST_CLOSE = float(df["Close"].iloc[-1])
     Q = {k: safe(f"{k}({s})", quote, s) for k, s in MARKETS.items()}
     Q = {k: v for k, v in Q.items() if v}
@@ -493,19 +615,39 @@ def build(refresh=0):
     ts, ms, ns = (sum(p for p, _ in x) for x in (T, M, N))
     ks = max(-3, min(3, sum(p for p, _ in K)))
     tot = ts + ks + ps + ms + ns
-    label, c = ("偏多", "up") if tot >= 6 else ("小幅偏多", "up") if tot >= 2 else ("區間震盪", "") if tot >= -1 else \
-        ("小幅偏空", "dn") if tot >= -5 else ("偏空", "dn")
+    now = dt.datetime.now()
+    comps = {"技術面": ts, "K棒型態": ks, "圖形型態": ps, "國際與資金面": ms, "消息面": ns}
+    weighted, w, entry, pdat = float(tot), {k: 1.0 for k in PR.COMPS}, None, None
+    try:
+        pdat = PR.load()
+        PR.update_outcomes(pdat, df, now)
+        w = PR.weights(pdat)[0]
+        weighted = sum(w[k] * v for k, v in comps.items())
+        entry = PR.record(pdat, now, comps, tot, weighted, float(df["Close"].iloc[-1]), w)
+        PR.save(pdat)
+        STATUS.append(("預測紀錄與權重調整(cache/predictions.json)", True, f"已結算 {PR.weights(pdat)[2]['done']} 天"))
+    except Exception as e:  # noqa
+        STATUS.append(("預測紀錄與權重調整(cache/predictions.json)", False, f"{type(e).__name__}: {str(e)[:100]}"))
+    label = PR.label_of(weighted)
+    c = "up" if weighted >= 2 else "dn" if weighted <= -2 else ""
 
     p = ['<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>台股大盤分析</title>']
-    if refresh:
-        p.append(f'<meta http-equiv="refresh" content="{refresh}">')
     p.append(f"<style>{CSS}</style></head><body><main><h1>📊 台股大盤 K 線與隔日行情分析</h1>{NAV}")
     p.append(f'<p class="note">本頁為定時更新的快照（非逐筆即時）。報告產生時間：{dt.datetime.now():%Y-%m-%d %H:%M:%S}　歷史資料至 {info["date"]}（Yahoo 可能有延遲）。美股等海外資料為其最近一個收盤/報價日。</p>')
     exp = expected_last_day()
     if info["date"] < exp:
         p.append(f'<p class="bad">⚠ 日K最新只到 {info["date"]}，依今天時間應至少到 {exp}（若剛好遇到國定假日則屬正常）。資料可能落後，分析請留意時效。</p>')
     if n_fill:
-        p.append(f'<p class="note">已用證交所資料補上 {n_fill} 根較新的日K（證交所資料沒有成交量，補上的K棒量能以 0 顯示）。</p>')
+        p.append(f'<p class="note">已補上 {n_fill} 根較新的日K（來源為證交所或 Yahoo 5 分鐘K彙整；補上的K棒成交量可能為 0 或不完整）。</p>')
+    dd = [f"日K至 {info['date']}"]
+    if inst:
+        dd.append(f"三大法人 {inst['date']}")
+    if fut:
+        dd.append("台指期 " + "／".join(f"{n}{fut[k]['date']}" for k, n in (("day", "日盤"), ("night", "盤後")) if k in fut))
+    if Q.get("S&P500"):
+        dd.append(f"美股 {Q['S&P500']['date']}")
+    p.append('<p class="note">資料日期一覽：' + "｜".join(dd) + "</p>")
+    p.append(LIVE_HTML.replace("__GEN__", now.astimezone().isoformat(timespec="seconds")).replace("__REFRESH__", str(int(refresh))))
     p.append('<div class="card">')
     chg = cur["price"] - cur["prev"]
     pc = chg / cur["prev"] * 100
@@ -515,12 +657,26 @@ def build(refresh=0):
                     ("S&P500", "那斯達克", "費城半導體", "台積電ADR", "EWT台灣ETF(美股)", "S&P500期貨", "那斯達克期貨", "VIX恐慌指數", "美元/台幣") if k in Q)
     if chips:
         p.append(f'<div class="note">海外最新（相對前一收盤，Yahoo 可能延遲）：{chips}<br>美股現金交易時段約台灣時間 22:30～05:00（冬令；夏令為 21:30～04:00），期貨近 24 小時交易，晚上的隔日台股判斷以美股、期貨與 EWT 為主。</div>')
-    p.append(f'<div class="big">隔日預判：<span class="{c}">{label}</span>（總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋圖形型態 {ps:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
+    p.append(f'<div class="big">{"今日" if PR.target_date(now) == now.date() else "隔日"}預判：<span class="{c}">{label}</span>（加權後 {weighted:+.1f}；原始總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋圖形型態 {ps:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
     p.append(f'<p>近20日壓力約 <b>{info["hi"]:,.0f}</b>，支撐約 <b>{info["lo"]:,.0f}</b>；有效突破壓力偏多，跌破支撐轉弱。</p></div>')
-    p.append('<div class="card"><h2>K 線圖</h2>')
-    p.append(chart(df, "日K（月線 MA20／季線 MA60／年線 MA240）", [5, 20, 60, 240], ["週線MA5", "月線MA20", "季線MA60", "年線MA240"], 250, True, True, PT))
-    p.append(chart(resample(df, "W-FRI"), "週K", [5, 13, 26, 52], ["MA5週", "MA13週(季)", "MA26週(半年)", "MA52週(年)"], 156))
-    p.append(chart(resample(df, "ME"), "月K", [3, 6, 12, 24], ["MA3月", "MA6月", "MA12月(年)", "MA24月"], 120))
+    today_s = now.strftime("%Y%m%d")
+    if pdat is not None:
+        p.append(pred_card(pdat, w, entry, weighted, now, pc, today_s in cur["time"].replace("-", ""), tot))
+    p.append('<div class="card"><h2>K 線圖（可調整時間範圍）</h2>')
+    p.append(RANGE_HTML)
+    first = True
+    if d5 is not None and len(d5) > 10:
+        p.append(chart(d5, "當日走勢（5 分鐘K；MA12＝1 小時、MA48＝4 小時；按鈕可看當日／2日／5日）", [12, 48], ["MA12(1小時)", "MA48(4小時)"],
+                       min(len(d5), 60), first=first, buttons=[(1, "day", "當日"), (2, "day", "2日")], intraday=True))
+        first = False
+    p.append(chart(df, "日K（週線MA5／月線MA20／季線MA60／半年線MA120／年線MA240）", [5, 10, 20, 60, 120, 240],
+                   ["週線MA5", "MA10", "月線MA20", "季線MA60", "半年線MA120", "年線MA240"], 250, True, first, PT,
+                   visible=["週線MA5", "月線MA20", "季線MA60", "年線MA240"],
+                   buttons=[(5, "day", "5日"), (1, "month", "1個月"), (3, "month", "3個月"), (6, "month", "6個月"), (1, "year", "1年"), (3, "year", "3年")]))
+    p.append(chart(resample(df, "W-FRI"), "週K", [5, 13, 26, 52], ["MA5週", "MA13週(季)", "MA26週(半年)", "MA52週(年)"], 156,
+                   buttons=[(3, "month", "3個月"), (6, "month", "6個月"), (1, "year", "1年"), (3, "year", "3年")]))
+    p.append(chart(resample(df, "ME"), "月K", [3, 6, 12, 24], ["MA3月", "MA6月", "MA12月(年)", "MA24月"], 120,
+                   buttons=[(1, "year", "1年"), (3, "year", "3年"), (5, "year", "5年")]))
     p.append("</div>")
     p.append(f'<div class="card"><h2>K棒型態分析（日K，看最近 1～3 根）</h2><ul>{li(K)}</ul><p class="note">型態需搭配所處位置與量能判讀，單一型態可靠度有限；K棒型態分數最多計 ±3 分。</p></div>')
     if PT:
@@ -545,7 +701,7 @@ def build(refresh=0):
     p.append("</div>")
     st = "".join(f'<tr><td>{html.escape(n)}</td><td class="{"dn" if ok else "bad"}">{"成功" if ok else "失敗"}</td><td>{html.escape(m)}</td></tr>' for n, ok, m in STATUS)
     p.append(f'<div class="card"><h2>資料來源狀態</h2><table>{st}</table><p class="note">失敗的來源不會被估算或補數字，該項不計入評分。</p></div>')
-    p.append('<p class="note">本報告為規則式技術與總體指標加總，並非預測，不構成投資建議；我不是財務顧問，投資前請自行研究並控管風險。</p></main></body></html>')
+    p.append('<p class="note">本報告為規則式技術與總體指標加總，並非預測，不構成投資建議；我不是財務顧問，投資前請自行研究並控管風險。</p></main>' + NAVJS + '</body></html>')
     OUT_FILE.write_text("".join(p), encoding="utf-8")
     print(f"[{dt.datetime.now():%H:%M:%S}] 加權 {cur['price']:,.2f}（{chg:+,.2f}／{pc:+.2f}%，{cur['src']}）｜隔日預判：{label}（{tot:+d}）→ {OUT_FILE}")
     for n, ok, m in STATUS:

@@ -26,10 +26,11 @@ import requests
 from chart_patterns import HELP, TAIL
 from stock_scores import SCORES
 from stock_screener import twse_json
-from taiex_analyzer import STATUS, UA, num, safe
+from taiex_analyzer import STATUS, UA, expected_last_day, num, safe
 
 OUT_FILE = Path(__file__).with_name("universe.html")
 TRENDS = Path(__file__).with_name("cache") / "trends.json"
+ETFC = Path(__file__).with_name("cache") / "etf.json"
 
 IND = {"01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維", "05": "電機機械", "06": "電器電纜",
        "08": "玻璃陶瓷", "09": "造紙工業", "10": "鋼鐵工業", "11": "橡膠工業", "12": "汽車工業", "14": "建材營造",
@@ -143,16 +144,36 @@ def industries_otc():
 
 
 def realtime_overlay(stocks):
-    """用證交所即時報價覆蓋收盤價（盤中才有意義；抓不到就保留收盤價）。回傳 (覆蓋檔數, 報價時間)。"""
-    s = requests.Session()
-    s.headers.update(UA)
-    s.get("https://mis.twse.com.tw/stock/index.jsp", timeout=12)
+    """用證交所即時報價覆蓋收盤價（盤中才有意義；抓不到就保留收盤價）。
+    小批次抓取並重試，成交量大的優先；連續 3 批沒資料就停止。回傳 (覆蓋檔數, 報價時間, 嘗試檔數)。"""
+    def new_session():
+        s = requests.Session()
+        s.headers.update(UA)
+        s.get("https://mis.twse.com.tw/stock/index.jsp", timeout=12)
+        return s
+
+    ss = new_session()
     ch = {f"{'tse' if r[3] == '上市' else 'otc'}_{r[0]}.tw": r for r in stocks if r[2] in ("股票", "ETF/ETN", "特別股", "TDR")}
-    keys, n, stamp = list(ch), 0, ""
-    for i in range(0, len(keys), 80):
-        j = s.get("https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
-                  params={"ex_ch": "|".join(keys[i:i + 80]), "json": "1", "delay": "0", "_": int(time.time() * 1000)}, timeout=20).json()
-        for m in j.get("msgArray", []):
+    keys = sorted(ch, key=lambda k: -(ch[k][6] or 0))
+    n, stamp, empty = 0, "", 0
+    for i in range(0, len(keys), 40):
+        arr = []
+        for attempt in (1, 2):
+            try:
+                j = ss.get("https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
+                           params={"ex_ch": "|".join(keys[i:i + 40]), "json": "1", "delay": "0", "_": int(time.time() * 1000)},
+                           timeout=20).json()
+                arr = j.get("msgArray", [])
+            except Exception:  # noqa
+                arr = []
+            if arr or attempt == 2:
+                break
+            time.sleep(1.5)
+            ss = new_session()
+        empty = 0 if arr else empty + 1
+        if empty >= 3:
+            break
+        for m in arr:
             z, y, v = num(m.get("z")), num(m.get("y")), num(m.get("v"))
             r = ch.get(f"{m.get('ex')}_{m.get('c')}.tw")
             if r and z and y and y > 0:
@@ -161,10 +182,10 @@ def realtime_overlay(stocks):
                     r[6] = round(v)
                 n += 1
                 stamp = max(stamp, f"{m.get('d', '')} {m.get('t', '')}")
-        time.sleep(0.3)
+        time.sleep(0.6)
     if not n:
         raise RuntimeError("沒有取得即時成交價（非開盤時段或被擋）")
-    return n, stamp
+    return n, stamp, len(keys)
 
 
 def institutional_by_stock():
@@ -244,8 +265,9 @@ input[type=checkbox]{width:auto;margin-right:4px}button{background:transparent;c
 details{margin-top:8px}summary{cursor:pointer;color:var(--ac)}#indbox label{display:inline-block;margin:2px 10px 2px 0;font-size:14px;color:var(--tx)}
 </style></head><body><main>
 <h1>🔎 全市場篩選與評價（上市、上櫃、ETF、權證、申請上市）</h1>
-<p style="font-size:15px">📍 <a href="taiex_report.html">大盤分析</a>｜<a href="universe.html"><b>🔎 全市場篩選與評價</b></a></p>
+<p style="font-size:15px">📍 <a class="nv" href="taiex_report.html">大盤分析</a>｜<a class="nv" href="universe.html"><b>🔎 全市場篩選與評價</b></a></p>
 <p class="note">報價：__DATE__｜資料更新：__NOW__｜條件在你的瀏覽器即時篩選，不需重新執行。僅供研究參考，不構成投資建議。</p>
+<div id="stale" style="display:none;background:#fff3cd;color:#1d2330;border:1px solid #e0a800;border-radius:6px;padding:8px;margin:6px 0"></div>
 <div><button class="tb on" data-t="s" onclick="tab('s')">個股／ETF</button><button class="tb" data-t="b" onclick="tab('b')">類股強弱</button><button class="tb" data-t="i" onclick="tab('i')">法人買賣超</button><button class="tb" data-t="w" onclick="tab('w')">權證</button><button class="tb" data-t="a" onclick="tab('a')">申請上市</button></div>
 
 <section id="ts" class="card"><div class="g">
@@ -292,7 +314,7 @@ details{margin-top:8px}summary{cursor:pointer;color:var(--ac)}#indbox label{disp
 const D=__DATA__;
 const $=id=>document.getElementById(id),esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const nv=id=>{const v=$(id).value.trim();return v===""?null:parseFloat(v)},fx=(x,d)=>x==null?"—":x.toFixed(d);
-const SC=D.scores||{},TR=D.trends||{},SER=D.series||{},HELPD=D.help||{},ind=s=>s[10]||"未分類";
+const SC=D.scores||{},TR=D.trends||{},SER=D.series||{},HELPD=D.help||{},ETF=D.etf||{},ind=s=>s[10]||"未分類";
 const fe=(s,x,d)=>x==null?(s[2]==="ETF/ETN"?"<span class='note'>不適用</span>":"—"):x.toFixed(d);
 const INDS=[...new Set(D.stocks.map(ind))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
 function tab(t){["s","b","i","w","a"].forEach(k=>$("t"+k).style.display=k===t?"":"none");document.querySelectorAll(".tb").forEach(b=>b.classList.toggle("on",b.dataset.t===t))}
@@ -316,7 +338,9 @@ function svgChart(c){const S=SER[c];if(!S)return"";
  return o+"</svg><p class='note'>紫色虛線為型態線（頸線、壓力線、支撐線等），最近 "+n+" 根日K。</p>"}
 function patHtml(c,pats){let h="<p><b>圖形型態：</b>"+esc(pats.join("、"))+"</p>"+svgChart(c);
  pats.forEach(x=>{const b=x.replace(/[(].*$/,"");if(HELPD[b])h+="<p class='note'><b>"+esc(b)+"</b>："+esc(HELPD[b])+"</p>"});return h}
-function detHtml(c){const k=SC[c],t=TR[c];let h="";
+function etfHtml(c){const e=ETF[c];if(!e)return"";const f=(x,d)=>x==null?"—":x.toFixed(d);
+ return "<p><b>ETF 資料（Yahoo）：</b>淨值 "+f(e.nav,2)+"｜折溢價 "+(e.pn==null?"—":((e.pn-1)*100).toFixed(2)+"%")+"｜規模 "+(e.aum==null?"—":(e.aum/1e8).toFixed(1)+" 億")+"｜殖利率 "+f(e.y,2)+"%｜持股本益比 "+f(e.pe,1)+"</p>"}
+function detHtml(c){const k=SC[c],t=TR[c];let h=etfHtml(c);
  if(t&&t[5]&&t[5].length)h+=patHtml(c,t[5]);
  if(t)h+="<p><b>走勢：</b>"+(t[0]>0?"連續上漲 "+t[0]+" 日":t[0]<0?"連續下跌 "+(-t[0])+" 日":"無連續漲跌")+"；5日 "+t[1]+"%、20日 "+t[2]+"%"+(t[3]?"；K棒警示："+esc(t[3]):"")+"（最新K棒實體 "+t[4]+"%）</p>";
  if(!k)return h+"此檔尚無深入評價資料。";
@@ -356,10 +380,16 @@ function renderW(){
 function renderA(){const a=D.apply;$("atb").innerHTML=a&&a.rows.length?"<tr>"+a.cols.map(c=>"<th>"+esc(c)+"</th>").join("")+"</tr>"+a.rows.map(r=>"<tr>"+r.map(x=>"<td>"+esc(x)+"</td>").join("")+"</tr>").join(""):"<tr><td>本次未取得申請上市資料（見下方資料來源狀態）</td></tr>"}
 const PN=[...new Set(Object.values(TR).flatMap(t=>(t[5]||[]).map(x=>x.replace(/[(].*$/,""))))].sort();
 $("pt").innerHTML+=PN.map(n=>"<option>"+esc(n)+"</option>").join("");
-const nsc=Object.keys(SC).length,ntr=Object.keys(TR).length;
-$("sn").textContent=(nsc?("深入評價 "+nsc+" 檔（評價時間 "+(D.scored_at||"—")+"；依股價區間取成交量較大者，其餘顯示「—」）。"):"尚未取得深入評價資料。")+(ntr?("走勢統計 "+ntr+" 檔（"+(D.trends_at||"—")+"；連續漲跌依日K計算，盤中含當日最新價）。"):"尚未取得走勢統計。")+"ETF 沒有本益比、殖利率與財報，因此這些欄位顯示「—」。評價為規則式評分，不是買賣建議。";
+const nsc=Object.keys(SC).length,ntr=Object.keys(TR).length,npat=Object.values(TR).filter(t=>Array.isArray(t[5])).length,nhit=Object.values(TR).filter(t=>Array.isArray(t[5])&&t[5].length).length;
+$("sn").textContent=(nsc?("深入評價 "+nsc+" 檔（評價時間 "+(D.scored_at||"—")+"；依股價區間取成交量較大者，其餘顯示「—」）。"):"尚未取得深入評價資料。")+(ntr?("走勢統計 "+ntr+" 檔（"+(D.trends_at||"—")+"；連續漲跌依日K計算，盤中含當日最新價）。"+(D.trends_asof?"日K最新至 "+D.trends_asof+(D.trends_stale?"（⚠ 落後，可能是 Yahoo 資料延遲或尚未補上最新一日；國定假日除外）":"")+"。":"")+(npat?"圖形型態：其中 "+nhit+" 檔偵測到明確型態（"+Object.keys(SER).length+" 檔附 K 線圖）。":"⚠ 走勢統計是舊版格式、沒有圖形型態資料：請確認 stock_trends.py 與 chart_patterns.py 已更新到 v1，並重新執行。")):"尚未取得走勢統計。")+"ETF 的本益比＝持股本益比、殖利率＝近期配息殖利率、淨值比＝市價÷淨值（接近 1 代表沒有明顯折溢價），取自 Yahoo，台股 ETF 常有缺漏，缺漏顯示「ETF不適用」；ETF 不做基本面評分。評價為規則式評分，不是買賣建議。";
 $("ii").innerHTML+=INDS.map(n=>"<option>"+esc(n)+"</option>").join("");
 render();renderB();renderI();renderW();renderA();
+var GEN=new Date("__GEN__");
+function hardReload(){location.replace(location.pathname+"?t="+Date.now())}
+function age(){var m=Math.round((Date.now()-GEN.getTime())/60000),el=$("stale");
+ if(m>20){el.style.display="";el.innerHTML="⚠ 這份頁面是 <b>"+m+"</b> 分鐘前產生的。可能是瀏覽器暫存的舊頁面，請 <a href='#' onclick='hardReload();return false'>重新載入最新版</a>；若仍然很舊，代表 GitHub 排程尚未更新。"}else{el.style.display="none"}}
+age();setInterval(age,30000);setTimeout(hardReload,300000);
+document.querySelectorAll("a.nv").forEach(function(a){a.addEventListener("click",function(e){e.preventDefault();location.href=a.getAttribute("href").split("?")[0]+"?t="+Date.now()})});
 </script></body></html>"""
 
 
@@ -381,6 +411,16 @@ def main():
     app = safe("申請上市公司(applylistingLocal)", applying)
     scores, scored_at, _ = load_cache(SCORES)
     trends, trends_at, tj = load_cache(TRENDS)
+    etf, _, _ = load_cache(ETFC)
+    for r in stocks:
+        e = etf.get(r[0]) if r[2] == "ETF/ETN" else None
+        if e:
+            if r[7] is None:
+                r[7] = e.get("pe")
+            if r[8] is None:
+                r[8] = e.get("y")
+            if r[9] is None and e.get("nav") and r[4]:
+                r[9] = round(r[4] / e["nav"], 3)
     STATUS.append(("深入評價快取(cache/scores.json)", bool(scores), f"{len(scores)} 檔" if scores else "尚無快取或讀取失敗"))
     STATUS.append(("走勢統計快取(cache/trends.json)", bool(trends), f"{len(trends)} 檔" if trends else "尚無快取或讀取失敗"))
     order = ["股票", "ETF/ETN", "特別股", "TDR", "其他"]
@@ -389,10 +429,11 @@ def main():
     st = "".join(f'<tr><td>{html.escape(n)}</td><td>{"成功" if ok else "失敗"}</td><td>{html.escape(m)}</td></tr>' for n, ok, m in STATUS)
     data = json.dumps({"stocks": stocks, "warrants": war, "apply": app, "scores": scores, "scored_at": scored_at,
                        "trends": trends, "trends_at": trends_at, "inst": inst,
-                       "series": tj.get("series", {}), "help": {k: v for k, v in HELP.items()}, "pattern_tail": TAIL}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
-    src = f"證交所即時（{rt[1]}，覆蓋 {rt[0]} 檔，其餘為最近收盤）" if rt else "最近一個交易日的收盤價（即時報價抓不到或非開盤時段）"
+                       "series": tj.get("series", {}), "etf": etf,
+                       "trends_asof": tj.get("asof", ""), "trends_stale": bool(tj.get("asof")) and tj.get("asof") < expected_last_day().isoformat(), "help": {k: v for k, v in HELP.items()}, "pattern_tail": TAIL}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    src = f"證交所即時（{rt[1]}，覆蓋 {rt[0]}/{rt[2]} 檔，其餘為最近收盤）" if rt else "最近一個交易日的收盤價（即時報價抓不到或非開盤時段）"
     page = (PAGE.replace("__DATA__", data).replace("__KINDS__", kh).replace("__STATUS__", st)
-            .replace("__NOW__", f"{dt.datetime.now():%Y-%m-%d %H:%M}").replace("__DATE__", html.escape(src)))
+            .replace("__NOW__", f"{dt.datetime.now():%Y-%m-%d %H:%M}").replace("__GEN__", dt.datetime.now().astimezone().isoformat(timespec="seconds")).replace("__DATE__", html.escape(src)))
     OUT_FILE.write_text(page, encoding="utf-8")
     print(f"股票/ETF {len(stocks)} 檔、權證 {len(war)} 檔、申請上市 {len(app['rows']) if app else 0} 家、評價 {len(scores)} 檔、走勢 {len(trends)} 檔 → {OUT_FILE}")
     for n, ok, m in STATUS:

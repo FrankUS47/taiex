@@ -17,6 +17,7 @@
 import argparse
 import datetime as dt
 import json
+import re
 import time
 from pathlib import Path
 
@@ -25,7 +26,7 @@ import yfinance as yf
 
 import chart_patterns as CP
 import stock_universe as U
-from taiex_analyzer import STATUS, safe
+from taiex_analyzer import STATUS, expected_last_day, num, safe
 
 CACHE_DIR = Path(__file__).with_name("cache")
 TRENDS = CACHE_DIR / "trends.json"
@@ -62,20 +63,41 @@ def stats(df):
     return [streak * sign, pct(c5), pct(c20), "、".join(flags), round(float(body.iloc[-1] / o.iloc[-1] * 100), 2) if o.iloc[-1] else 0.0]
 
 
-def batch(symbols):
+def twse_last_bars():
+    """證交所 STOCK_DAY_ALL：最近一個交易日全部上市股票的開高低收。用來補 Yahoo 日K落後的最新一日。"""
+    d = U.twse_json("exchangeReport/STOCK_DAY_ALL")
+    day, out = None, {}
+    for r in d:
+        ds = str(r.get("Date", "")).strip()
+        if day is None and re.fullmatch(r"\d{7}", ds):
+            day = dt.date(int(ds[:3]) + 1911, int(ds[3:5]), int(ds[5:7]))
+        elif day is None and re.fullmatch(r"\d{8}", ds):
+            day = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
+        o, h, l, c = (num(r.get(k)) for k in ("OpeningPrice", "HighestPrice", "LowestPrice", "ClosingPrice"))
+        if None not in (o, h, l, c) and c > 0:
+            out[str(r.get("Code", "")).strip()] = (o, h, l, c)
+    if day is None:
+        raise RuntimeError("STOCK_DAY_ALL 沒有日期欄位，無法補最新日K")
+    return day, out
+
+
+def batch(symbols, extra=None):
     data = yf.download(" ".join(symbols), period="6mo", interval="1d", group_by="ticker", auto_adjust=False,
                        progress=False, threads=True)
     recs, sers = {}, {}
     for s in symbols:
         try:
             df = data if len(symbols) == 1 else data[s]
-            ohlc = df[["Open", "High", "Low", "Close"]].dropna()
+            ohlc = df[["Open", "High", "Low", "Close"]].dropna().copy()
+            if extra and ohlc.index[-1].date() < extra[0] and s.split(".")[0] in extra[1]:
+                ohlc.loc[pd.Timestamp(extra[0])] = list(extra[1][s.split(".")[0]])   # Yahoo 落後時補上證交所最新日K
             r = stats(ohlc)
             if not r:
                 continue
             pats = CP.detect(ohlc) if len(ohlc) >= 60 else []
             pats = sorted(pats, key=lambda q: (not q["confirmed"], q["bias"] == 0))[:2]
             r.append([CP.short(q) for q in pats])
+            r.append(str(ohlc.index[-1].date()))   # 第 7 欄：這檔日K最新日期
             recs[s] = r
             if pats:
                 n = len(ohlc)
@@ -89,11 +111,11 @@ def batch(symbols):
     return recs, sers
 
 
-def write(stocks, series):
+def write(stocks, series, asof=""):
     CACHE_DIR.mkdir(exist_ok=True)
     top = dict(sorted(series.items(), key=lambda kv: -kv[1].get("v", 0))[:250])  # 只保留成交量較大的 250 檔型態圖
     TRENDS.write_text(json.dumps({"generated": dt.datetime.now().isoformat(timespec="seconds"), "count": len(stocks),
-                                  "stocks": stocks, "series": top}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                                  "asof": asof, "stocks": stocks, "series": top}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
 
 def main():
@@ -121,13 +143,14 @@ def main():
             sym[r[0] + (".TW" if r[3] == "上市" else ".TWO")] = r[0]
     if not sym:
         raise SystemExit("取不到股票清單")
+    extra = safe("證交所最新日K(STOCK_DAY_ALL，補 Yahoo 落後的最新一日)", twse_last_bars)
     keys, res, ser, t0 = list(sym), {}, {}, time.time()
     print(f"計算 {len(keys)} 檔的走勢統計與圖形型態（每批 {a.chunk} 檔）…")
     for i in range(0, len(keys), a.chunk):
         if time.time() - t0 > a.max_minutes * 60:
             print("已達時間上限，先存目前結果。")
             break
-        recs, sers = batch(keys[i:i + a.chunk])
+        recs, sers = batch(keys[i:i + a.chunk], extra)
         for s, v in recs.items():
             res[sym[s]] = v
         for s, v in sers.items():
@@ -137,7 +160,11 @@ def main():
     merged = {**old, **res}  # 這次沒抓到的沿用舊資料
     series = {c: v for c, v in old_ser.items() if c not in res}
     series.update(ser)
-    write(merged, series)
+    dates = [v[6] for v in res.values() if len(v) > 6]
+    asof = max(dates) if dates else ""
+    if asof and asof < expected_last_day().isoformat():
+        print(f"⚠ 走勢統計的日K最新只到 {asof}，晚於預期的 {expected_last_day()} 之前（Yahoo 資料落後；國定假日除外）。")
+    write(merged, series, asof)
     print(f"完成：本次取得 {len(res)} 檔，快取共 {len(merged)} 檔，型態圖 {min(len(series), 250)} 檔 → {TRENDS}")
     STATUS.clear()
 
