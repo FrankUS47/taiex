@@ -256,13 +256,17 @@ PAGE = """<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta 
 :root{--bg:#f6f7f9;--card:#fff;--tx:#1d2330;--mut:#6b7385;--bd:#dde1e8;--ac:#2b6cb0;--up:#d6293e;--dn:#1a9a52}
 @media (prefers-color-scheme:dark){:root{--bg:#14171d;--card:#1d222b;--tx:#e7eaf0;--mut:#9aa3b5;--bd:#303744;--ac:#63a4f0;--up:#ff6b7d;--dn:#4fd18b}}
 body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.6 system-ui,'Noto Sans TC','Microsoft JhengHei',sans-serif}
-main{max-width:1200px;margin:0 auto;padding:12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin:10px 0}
+main{max-width:none;margin:0 auto;padding:12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin:10px 0}
 h1{font-size:21px}.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}label{display:block;font-size:12px;color:var(--mut)}
 input,select{width:100%;box-sizing:border-box;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
 input[type=checkbox]{width:auto;margin-right:4px}button{background:transparent;color:var(--ac);border:1px solid var(--ac);border-radius:6px;padding:6px 14px;font:inherit;cursor:pointer;margin:4px 6px 0 0}button.on{background:var(--ac);color:#fff}
 .w{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--bd);padding:5px 8px;text-align:left;white-space:nowrap}
 .up{color:var(--up)}.dn{color:var(--dn)}.note{font-size:13px;color:var(--mut)}a{color:var(--ac)}.chk label{display:inline;margin-right:10px;font-size:14px;color:var(--tx)}
 details{margin-top:8px}summary{cursor:pointer;color:var(--ac)}#indbox label{display:inline-block;margin:2px 10px 2px 0;font-size:14px;color:var(--tx)}
+#st{font-size:13px}th.srt{cursor:pointer;user-select:none}th.srt:hover{background:rgba(43,108,176,.12)}
+th.c-code,td.c-code{position:sticky;left:0;background:var(--card);z-index:2;min-width:64px}
+th.c-name,td.c-name{position:sticky;left:64px;background:var(--card);z-index:2;box-shadow:2px 0 3px rgba(0,0,0,.08)}
+.bd{display:inline-block;padding:1px 8px;border-radius:10px;font-weight:600}#colbox label{display:inline-block;margin:2px 10px 2px 0;font-size:14px;color:var(--tx)}
 </style></head><body><main>
 <h1>🔎 全市場篩選與評價（上市、上櫃、ETF、權證、申請上市）</h1>
 <p style="font-size:15px">📍 <a class="nv" href="taiex_report.html">大盤分析</a>｜<a class="nv" href="universe.html"><b>🔎 全市場篩選與評價</b></a></p>
@@ -284,12 +288,14 @@ details{margin-top:8px}summary{cursor:pointer;color:var(--ac)}#indbox label{disp
 <div><label>評價總分下限</label><input id="smin" type="number" step="any" oninput="render()"></div>
 <div><label>評等</label><select id="ov" onchange="render()"><option value="">全部</option><option>偏買進</option><option>觀望偏多</option><option>中性</option><option>觀望偏空</option><option>偏賣出</option></select></div>
 <div><label>代號／名稱關鍵字</label><input id="q" oninput="render()"></div>
-<div><label>排序</label><select id="sort" onchange="render()"><option value="vol">成交量（大到小）</option><option value="yld">殖利率（高到低）</option><option value="pe">本益比（低到高）</option><option value="up">當日漲幅（大到小）</option><option value="dn">當日跌幅（大到小）</option><option value="px">股價（低到高）</option><option value="stk">連續上漲日數（多到少）</option><option value="stkd">連續下跌日數（多到少）</option><option value="c5">5日漲幅（大到小）</option><option value="c20">20日漲幅（大到小）</option><option value="tot">評價總分（高到低）</option></select></div></div>
+<div><label>排序</label><select id="sort" onchange="SORTC={k:null,d:1};render()"><option value="vol">成交量（大到小）</option><option value="yld">殖利率（高到低）</option><option value="pe">本益比（低到高）</option><option value="up">當日漲幅（大到小）</option><option value="dn">當日跌幅（大到小）</option><option value="px">股價（低到高）</option><option value="stk">連續上漲日數（多到少）</option><option value="stkd">連續下跌日數（多到少）</option><option value="c5">5日漲幅（大到小）</option><option value="c20">20日漲幅（大到小）</option><option value="tot">評價總分（高到低）</option></select></div></div>
 <div class="chk" style="margin-top:8px">類別：__KINDS__　市場：<label><input type="checkbox" class="m" value="上市" checked onchange="render()"> 上市</label><label><input type="checkbox" class="m" value="上櫃" checked onchange="render()"> 上櫃</label>
 <label><input type="checkbox" id="pc" onchange="render()">只看已確認型態</label><label><input type="checkbox" id="sc" onchange="render()">只看已評價</label><label><input type="checkbox" id="gr" onchange="render()">只留營收年成長為正</label>
 <button onclick="reset()">重設條件</button></div>
 <details><summary>產業別（點開選擇，預設全選）</summary><div style="margin:6px 0"><button onclick="allInd(true)">全選</button><button onclick="allInd(false)">全不選</button></div><div id="indbox"></div></details>
-<p class="note" id="sn"></p><p class="note" id="cnt"></p><div class="w"><table id="st"></table></div></section>
+<details><summary>顯示欄位（表格太寬時，可隱藏不需要的欄位；點欄位名稱可排序）</summary><div style="margin:6px 0"><button onclick="colPreset('lite')">精簡</button><button onclick="colPreset('full')">完整</button></div><div id="colbox"></div></details>
+<p class="note" id="sn"></p><p class="note" id="cnt"></p>
+<p class="note">顏色與百分比：<span class="up">紅色＝偏多（偏買進）傾向</span>、<span class="dn">綠色＝偏空（偏賣出）傾向</span>，百分比越大程度越強。「技術傾向」由圖形型態（已確認 ±2、形成中 ±1）、連續漲跌 3 日以上、20 日漲跌超過 5%、K 棒警示（長紅黑、跳空）加總，最多 ±100%；「綜合傾向」由深入評價總分換算（僅有評價的股票）。皆為規則式量化傾向，不是買賣建議，也不保證未來表現。</p><div class="w"><table id="st"></table></div></section>
 
 <section id="tb" class="card" style="display:none"><p class="note">依目前報價計算各產業（僅一般股票）的平均漲跌、上漲與下跌家數與總成交量；點產業名稱會跳到篩選頁並只選該產業。</p><div class="w"><table id="btb"></table></div></section>
 
@@ -324,9 +330,9 @@ const SORT={vol:(a,b)=>b[6]-a[6],yld:(a,b)=>(b[8]==null?-1:b[8])-(a[8]==null?-1:
  tot:(a,b)=>(SC[b[0]]?SC[b[0]].tot:-99)-(SC[a[0]]?SC[a[0]].tot:-99)};
 $("indbox").innerHTML=INDS.map(n=>"<label><input type='checkbox' class='ind' value='"+esc(n)+"' checked onchange='render()'>"+esc(n)+"</label>").join("");
 function allInd(v){document.querySelectorAll(".ind").forEach(x=>x.checked=v);render()}
-function reset(){["pmax","vmin","emax","ymin","bmax","q","smin","upn","dnn"].forEach(i=>$(i).value="");$("sort").value="vol";$("ov").value="";$("kb").value="";$("pt").value="";$("pb").value="";$("pc").checked=false;$("sc").checked=false;$("gr").checked=false;allInd(true)}
+function reset(){["pmax","vmin","emax","ymin","bmax","q","smin","upn","dnn"].forEach(i=>$(i).value="");$("sort").value="vol";SORTC={k:null,d:1};$("ov").value="";$("kb").value="";$("pt").value="";$("pb").value="";$("pc").checked=false;$("sc").checked=false;$("gr").checked=false;allInd(true)}
 function focusInd(n){document.querySelectorAll(".ind").forEach(x=>x.checked=(x.value===n));tab("s");render()}
-const li=a=>a.map(x=>"<li>"+(x[0]>0?"🔺":x[0]<0?"🔻":"➖")+" "+esc(x[1])+"（"+(x[0]>0?"+":"")+x[0]+"）</li>").join("");
+const li=a=>a.map(x=>"<li>"+(x[0]>0?"<span class='up'>▲</span>":x[0]<0?"<span class='dn'>▼</span>":"<span class='note'>▬</span>")+" "+esc(x[1])+"（"+(x[0]>0?"+":"")+x[0]+"）</li>").join("");
 function det(c){const e=$("d_"+c);if(e)e.style.display=e.style.display==="none"?"":"none"}
 function svgChart(c){const S=SER[c];if(!S)return"";
  const B=S.b,W=640,H=240,pl=8,pr=60,pt=8,pb=8,n=B.length;let mx=-1e9,mn=1e9;
@@ -347,19 +353,61 @@ function detHtml(c){const k=SC[c],t=TR[c];let h=etfHtml(c);
  return h+"<b>基本面 "+k.fs+"</b><ul>"+(li(k.F)||"<li>Yahoo 無財報資料，不計分</li>")+"</ul><b>技術面 "+k.ts+"</b><ul>"+li(k.T)+"</ul><b>消息面 "+k.ns+"</b><ul>"+(li(k.N)||"<li>無新聞資料</li>")+"</ul>"+
  (k.news.length?"<b>相關新聞</b><ul>"+k.news.map(n=>"<li><a href='"+(/^https?:/.test(n[1])?esc(n[1]):"#")+"' target='_blank' rel='noopener'>"+esc(n[0])+"</a></li>").join("")+"</ul>":"")+
  "<p class='note'>近20日壓力 "+k.hi.toFixed(2)+"、支撐 "+k.lo.toFixed(2)+"；評價時間 "+esc(k.t)+"。規則式評分，不是買賣建議。</p>"}
+var SORTC={k:null,d:1},HID=new Set(["kind","mkt","ns"]);
+try{const j=JSON.parse(localStorage.getItem("uni_hid")||"null");if(Array.isArray(j))HID=new Set(j)}catch(e){}
+const na=s=>s[2]==="ETF/ETN"?"<span class='note'>不適用</span>":"—";
+const pcs=v=>v==null?"—":"<span class='"+(v>0?"up":v<0?"dn":"")+"'>"+(v>0?"+":"")+v+"</span>";
+const rankOv={"偏買進":2,"觀望偏多":1,"中性":0,"觀望偏空":-1,"偏賣出":-2};
+function techPct(c){const t=TR[c];if(!t)return null;let p=0;
+ (t[5]||[]).forEach(x=>{const sg=x.includes("(多)")?1:x.includes("(空)")?-1:0;p+=sg*(x.includes("✓")?2:1)});
+ if(t[0]>=3)p+=1;else if(t[0]<=-3)p-=1;if(t[2]!=null){if(t[2]>5)p+=1;else if(t[2]<-5)p-=1}
+ const kb=t[3]||"";if(kb.includes("長紅"))p+=1;if(kb.includes("長黑"))p-=1;if(kb.includes("跳空漲"))p+=1;if(kb.includes("跳空跌"))p-=1;
+ return Math.max(-100,Math.min(100,Math.round(p/6*100)))}
+function tendPct(c){const k=SC[c];return k?Math.max(-100,Math.min(100,Math.round(k.tot/10*100))):null}
+function badge(p,label){if(p==null)return"—";const a=(0.10+0.35*Math.abs(p)/100).toFixed(2),col=p>0?"214,41,62":p<0?"26,154,82":"130,138,155";
+ return "<span class='bd' title='規則式量化傾向，不是買賣建議' style='background:rgba("+col+","+a+")'>"+(label?label+" ":"")+(p>0?"+":"")+p+"%</span>"}
+const TRv=(c,i)=>TR[c]?TR[c][i]:null;
+const COLS=[
+ {k:"code",l:"代號",v:s=>s[0],s:1,r:(s,c)=>"<a href='https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID="+c+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+c+"</a>"},
+ {k:"name",l:"名稱",v:s=>s[1],s:1,r:s=>esc(s[1])},
+ {k:"px",l:"現價",v:s=>s[4],r:s=>fx(s[4],2)},
+ {k:"pct",l:"漲跌%",v:s=>s[5],r:s=>"<span class='"+(s[5]>0?"up":s[5]<0?"dn":"")+"'>"+(s[5]>0?"+":"")+s[5].toFixed(2)+"</span>"},
+ {k:"vol",l:"量(張)",v:s=>s[6],r:s=>s[6].toLocaleString()},
+ {k:"tend",l:"綜合傾向",v:s=>tendPct(s[0]),r:s=>badge(tendPct(s[0]),SC[s[0]]?SC[s[0]].ov:"")},
+ {k:"tech",l:"技術傾向",v:s=>techPct(s[0]),r:s=>badge(techPct(s[0]))},
+ {k:"stk",l:"連續",v:s=>TRv(s[0],0),r:s=>{const t=TR[s[0]];return t?(t[0]>0?"<span class='up'>▲"+t[0]+"</span>":t[0]<0?"<span class='dn'>▼"+(-t[0])+"</span>":"—"):"—"}},
+ {k:"c5",l:"5日%",v:s=>TRv(s[0],1),r:s=>pcs(TRv(s[0],1))},
+ {k:"c20",l:"20日%",v:s=>TRv(s[0],2),r:s=>pcs(TRv(s[0],2))},
+ {k:"kb",l:"K棒警示",v:s=>TRv(s[0],3)||null,s:1,r:s=>{const t=TR[s[0]];return t&&t[3]?esc(t[3]):"—"}},
+ {k:"pat",l:"圖形型態",v:s=>{const t=TR[s[0]];return t&&t[5]&&t[5].length?t[5].join("、"):null},s:1,r:s=>{const t=TR[s[0]];return t&&t[5]&&t[5].length?esc(t[5].join("、")):"—"}},
+ {k:"pe",l:"本益比",v:s=>s[7],r:s=>fe(s,s[7],1)},
+ {k:"yld",l:"殖利率%",v:s=>s[8],r:s=>fe(s,s[8],2)},
+ {k:"pb",l:"淨值比",v:s=>s[9],r:s=>fe(s,s[9],2)},
+ {k:"fs",l:"基本面",v:s=>SC[s[0]]?SC[s[0]].fs:null,r:s=>SC[s[0]]?SC[s[0]].fs:na(s)},
+ {k:"ts",l:"技術面",v:s=>SC[s[0]]?SC[s[0]].ts:null,r:s=>SC[s[0]]?SC[s[0]].ts:na(s)},
+ {k:"ns",l:"消息",v:s=>SC[s[0]]?SC[s[0]].ns:null,r:s=>SC[s[0]]?SC[s[0]].ns:na(s)},
+ {k:"tot",l:"總分",v:s=>SC[s[0]]?SC[s[0]].tot:null,r:s=>SC[s[0]]?"<b>"+SC[s[0]].tot+"</b>":na(s)},
+ {k:"ind",l:"產業",v:ind,s:1,r:s=>esc(ind(s))},
+ {k:"kind",l:"類別",v:s=>s[2],s:1,r:s=>s[2]},
+ {k:"mkt",l:"市場",v:s=>s[3],s:1,r:s=>s[3]}];
+$("colbox").innerHTML=COLS.map(c=>"<label><input type='checkbox' class='col' value='"+c.k+"'"+(HID.has(c.k)?"":" checked")+" onchange='setCols()'>"+c.l+"</label>").join("");
+function setCols(){HID=new Set([...document.querySelectorAll(".col")].filter(x=>!x.checked).map(x=>x.value));try{localStorage.setItem("uni_hid",JSON.stringify([...HID]))}catch(e){}render()}
+function colPreset(m){const keep=new Set(["code","name","px","pct","vol","tend","tech","stk","pat"]);
+ document.querySelectorAll(".col").forEach(x=>{x.checked=(m==="full")||keep.has(x.value)});setCols()}
+function sortCol(k){if(SORTC.k!==k)SORTC={k:k,d:1};else if(SORTC.d===1)SORTC={k:k,d:-1};else SORTC={k:null,d:1};render()}
 function render(){
  const pm=nv("pmax"),vm=nv("vmin"),em=nv("emax"),ym=nv("ymin"),bm=nv("bmax"),sm=nv("smin"),un=nv("upn"),dn=nv("dnn"),kb=$("kb").value,ov=$("ov").value,gr=$("gr").checked,so=$("sc").checked,q=$("q").value.trim().toLowerCase(),pt=$("pt").value,pb=$("pb").value,pc=$("pc").checked;
  const ks=[...document.querySelectorAll(".k:checked")].map(x=>x.value),ms=[...document.querySelectorAll(".m:checked")].map(x=>x.value);
  const isel=new Set([...document.querySelectorAll(".ind:checked")].map(x=>x.value)),ifilt=isel.size<INDS.length;
  const r=D.stocks.filter(s=>{const k=SC[s[0]],t=TR[s[0]],pats=(t&&t[5])||[];return ks.includes(s[2])&&ms.includes(s[3])&&(!ifilt||isel.has(ind(s)))&&(pm==null||s[4]<=pm)&&(vm==null||s[6]>=vm)&&(em==null||(s[7]!=null&&s[7]>0&&s[7]<=em))&&(ym==null||(s[8]!=null&&s[8]>=ym))&&(bm==null||(s[9]!=null&&s[9]<=bm))&&(!q||(s[0]+s[1]).toLowerCase().includes(q))
   &&(un==null||(t&&t[0]>=un))&&(dn==null||(t&&t[0]<=-dn))&&(!kb||(t&&t[3]&&(kb==="任一"||t[3].includes(kb))))&&(!pt||pats.some(x=>x.startsWith(pt)))&&(!pb||pats.some(x=>x.includes("("+pb+")")))&&(!pc||pats.some(x=>x.includes("✓")))
-  &&(!so||k)&&(sm==null||(k&&k.tot>=sm))&&(!ov||(k&&k.ov===ov))&&(!gr||(k&&k.gr!=null&&k.gr>0))}).sort(SORT[$("sort").value]);
- $("cnt").textContent="符合 "+r.length+" 檔"+(r.length>300?"（僅顯示前 300 檔，請加條件縮小）":"")+"｜點任一列可展開走勢與評價理由";
- $("st").innerHTML="<tr><th>代號</th><th>名稱</th><th>產業</th><th>類別</th><th>市場</th><th>現價</th><th>漲跌%</th><th>量(張)</th><th>連續</th><th>5日%</th><th>20日%</th><th>K棒警示</th><th>圖形型態</th><th>本益比</th><th>殖利率%</th><th>淨值比</th><th>基本面</th><th>技術面</th><th>消息</th><th>總分</th><th>評等</th></tr>"+
- r.slice(0,300).map(s=>{const k=SC[s[0]],t=TR[s[0]],c=esc(s[0]),pats=(t&&t[5])||[],na=s[2]==="ETF/ETN"?"<span class='note'>不適用</span>":"—",cl=k?(/買|多/.test(k.ov)?"up":/賣|空/.test(k.ov)?"dn":""):"";
-  const stk=t?(t[0]>0?"<span class='up'>▲"+t[0]+"</span>":t[0]<0?"<span class='dn'>▼"+(-t[0])+"</span>":"—"):"—";
-  const pc=v=>v==null?"—":"<span class='"+(v>0?"up":v<0?"dn":"")+"'>"+(v>0?"+":"")+v+"</span>";
-  return "<tr data-c='"+c+"' onclick='det(this.dataset.c)' style='cursor:pointer'><td><a href='https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID="+c+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+c+"</a></td><td>"+esc(s[1])+"</td><td>"+esc(ind(s))+"</td><td>"+s[2]+"</td><td>"+s[3]+"</td><td>"+fx(s[4],2)+"</td><td class='"+(s[5]>0?"up":s[5]<0?"dn":"")+"'>"+(s[5]>0?"+":"")+s[5].toFixed(2)+"</td><td>"+s[6].toLocaleString()+"</td><td>"+stk+"</td><td>"+pc(t?t[1]:null)+"</td><td>"+pc(t?t[2]:null)+"</td><td>"+(t&&t[3]?esc(t[3]):"—")+"</td><td>"+(pats.length?esc(pats.join("、")):"—")+"</td><td>"+fe(s,s[7],1)+"</td><td>"+fe(s,s[8],2)+"</td><td>"+fe(s,s[9],2)+"</td><td>"+(k?k.fs:na)+"</td><td>"+(k?k.ts:na)+"</td><td>"+(k?k.ns:na)+"</td><td>"+(k?"<b>"+k.tot+"</b>":na)+"</td><td class='"+cl+"'>"+(k?k.ov:na)+"</td></tr><tr id='d_"+c+"' style='display:none'><td colspan='21' style='white-space:normal'>"+detHtml(s[0])+"</td></tr>"}).join("")}
+  &&(!so||k)&&(sm==null||(k&&k.tot>=sm))&&(!ov||(k&&k.ov===ov))&&(!gr||(k&&k.gr!=null&&k.gr>0))});
+ if(SORTC.k){const c=COLS.find(x=>x.k===SORTC.k),d=SORTC.d;r.sort((a,b)=>{const x=c.v(a),y=c.v(b);if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (c.s?String(x).localeCompare(String(y),"zh-Hant"):x-y)*d})}
+ else r.sort(SORT[$("sort").value]);
+ $("cnt").textContent="符合 "+r.length+" 檔"+(r.length>300?"（僅顯示前 300 檔，請加條件縮小）":"")+"｜點欄位名稱排序（再點反向，第三次取消）｜點任一列可展開走勢與評價理由";
+ const vis=COLS.filter(c=>!HID.has(c.k));
+ $("st").innerHTML="<tr>"+vis.map(c=>"<th class='srt c-"+c.k+"' data-k='"+c.k+"' onclick='sortCol(this.dataset.k)'>"+c.l+(SORTC.k===c.k?(SORTC.d===1?" ▲":" ▼"):"")+"</th>").join("")+"</tr>"+
+ r.slice(0,300).map(s=>{const c=esc(s[0]);return "<tr data-c='"+c+"' onclick='det(this.dataset.c)' style='cursor:pointer'>"+vis.map(x=>"<td class='c-"+x.k+"'>"+x.r(s,c)+"</td>").join("")+"</tr><tr id='d_"+c+"' style='display:none'><td colspan='"+vis.length+"' style='white-space:normal'>"+detHtml(s[0])+"</td></tr>"}).join("")}
 function renderB(){const g={};D.stocks.filter(s=>s[2]==="股票").forEach(s=>{const n=ind(s),o=g[n]||(g[n]={n,c:0,p:0,u:0,d:0,v:0});o.c++;o.p+=s[5];o.v+=s[6];if(s[5]>0)o.u++;else if(s[5]<0)o.d++});
  const a=Object.values(g).map(o=>({...o,avg:o.p/o.c})).sort((x,y)=>y.avg-x.avg);
  $("btb").innerHTML="<tr><th>產業</th><th>檔數</th><th>平均漲跌%</th><th>上漲</th><th>下跌</th><th>總成交量(張)</th></tr>"+a.map(o=>"<tr><td><a href='#' onclick=\\"focusInd(this.dataset.n);return false\\" data-n='"+esc(o.n)+"'>"+esc(o.n)+"</a></td><td>"+o.c+"</td><td class='"+(o.avg>0?"up":o.avg<0?"dn":"")+"'>"+(o.avg>0?"+":"")+o.avg.toFixed(2)+"</td><td>"+o.u+"</td><td>"+o.d+"</td><td>"+o.v.toLocaleString()+"</td></tr>").join("")}

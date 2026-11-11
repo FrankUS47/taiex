@@ -184,7 +184,8 @@ EXTRA = ".tag{padding:2px 8px;border-radius:10px;color:#fff;font-size:12px;backg
 
 
 def li(R):
-    return "".join(f"<li>{'🔺' if p > 0 else '🔻' if p < 0 else '➖'} {html.escape(t)}（{p:+d}）</li>" for p, t in R) or "<li>無資料</li>"
+    tri = lambda p: '<span class="up">▲</span>' if p > 0 else '<span class="dn">▼</span>' if p < 0 else '<span class="note">▬</span>'
+    return "".join(f"<li>{tri(p)} {html.escape(t)}（{p:+d}）</li>" for p, t in R) or "<li>無資料</li>"
 
 
 def tagcls(o):

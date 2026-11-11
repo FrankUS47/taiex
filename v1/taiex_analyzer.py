@@ -310,11 +310,20 @@ def macro_score(Q, rt, inst, fut, news_data, last_date):
 
 # ───────────────────────── 圖表 ─────────────────────────
 def resample(df, rule):
+    """週K、月K。每根K棒的日期標在該期間「最後一個實際有資料的交易日」，
+    不用期間結束日（否則本週會被標成還沒到的週五、本月會被標成月底）。"""
     agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+
+    def go(rl):
+        r = df.resample(rl).agg(agg).dropna()
+        last_day = df.index.to_series().resample(rl).last()
+        r.index = pd.DatetimeIndex(last_day.reindex(r.index).to_numpy())
+        return r
+
     try:
-        return df.resample(rule).agg(agg).dropna()
+        return go(rule)
     except ValueError:
-        return df.resample(rule.replace("ME", "M")).agg(agg).dropna()
+        return go(rule.replace("ME", "M"))
 
 
 RANGE_JS = r"""
@@ -396,7 +405,8 @@ def cls(x):
 
 
 def li(R):
-    return "".join(f"<li>{'🔺' if p > 0 else '🔻' if p < 0 else '➖'} {html.escape(t)}（{p:+d}）</li>" for p, t in R)
+    tri = lambda p: '<span class="up">▲</span>' if p > 0 else '<span class="dn">▼</span>' if p < 0 else '<span class="note">▬</span>'
+    return "".join(f"<li>{tri(p)} {html.escape(t)}（{p:+d}）</li>" for p, t in R)
 
 
 LIVE_HTML = """<div class="card" id="livecard"><div id="stale" style="display:none;background:#fff3cd;border:1px solid #e0a800;border-radius:6px;padding:8px;margin-bottom:8px"></div>
