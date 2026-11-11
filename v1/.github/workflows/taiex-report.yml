@@ -59,10 +59,10 @@ jobs:
         run: |
           S='${{ github.event.schedule }}'
           case "$S" in
-            "40 0 * * 1-5"|"30 8 * * 1-5") echo "scores=3" >> "$GITHUB_OUTPUT"; echo "trends=1" >> "$GITHUB_OUTPUT" ;;
-            "*/15 1-5 * * 1-5")            echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=0.4" >> "$GITHUB_OUTPUT" ;;
-            "*/30 10-21 * * 1-5")          echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=9999" >> "$GITHUB_OUTPUT" ;;
-            *)                             echo "scores=6" >> "$GITHUB_OUTPUT"; echo "trends=2" >> "$GITHUB_OUTPUT" ;;
+            "40 0 * * 1-5"|"30 8 * * 1-5") echo "scores=3" >> "$GITHUB_OUTPUT"; echo "trends=1" >> "$GITHUB_OUTPUT"; echo "etf=6" >> "$GITHUB_OUTPUT" ;;
+            "*/15 1-5 * * 1-5")            echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=0.4" >> "$GITHUB_OUTPUT"; echo "etf=9999" >> "$GITHUB_OUTPUT" ;;
+            "*/30 10-21 * * 1-5")          echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=9999" >> "$GITHUB_OUTPUT"; echo "etf=9999" >> "$GITHUB_OUTPUT" ;;
+            *)                             echo "scores=6" >> "$GITHUB_OUTPUT"; echo "trends=2" >> "$GITHUB_OUTPUT"; echo "etf=12" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: 大盤分析（網頁每 5 分鐘自動重新載入）
@@ -75,6 +75,10 @@ jobs:
       - name: 走勢統計（連續漲跌日數、K 棒警示）
         continue-on-error: true
         run: python stock_trends.py --reuse-hours ${{ steps.ttl.outputs.trends }} --max-minutes 15
+
+      - name: ETF 資料（淨值、折溢價、殖利率）
+        continue-on-error: true
+        run: python etf_info.py --reuse-hours ${{ steps.ttl.outputs.etf }}
 
       - name: 全市場篩選與評價頁（條件在網頁上設定）
         continue-on-error: true
@@ -93,10 +97,11 @@ jobs:
           cp taiex_report.html site/
           if [ -f universe.html ]; then cp universe.html site/; fi
           {
-            echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="300"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.9">'
-            echo "<h1>台股報告</h1><p>更新時間：$(date '+%Y-%m-%d %H:%M')（台灣時間）｜排程快照，非逐筆即時</p><ul><li><a href=\"taiex_report.html\">大盤 K 線與隔日行情分析</a></li>"
-            if [ -f site/universe.html ]; then echo '<li><a href="universe.html">全市場篩選與評價（類股、連漲連跌、K 棒警示、評價）</a></li>'; fi
-            echo '</ul><p style="color:#666">規則式計算，僅供研究參考，不構成投資建議。</p></body></html>'
+            V=$(date +%s)
+            echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.9">'
+            echo "<h1>台股報告</h1><p>更新時間：$(date '+%Y-%m-%d %H:%M')（台灣時間）｜排程快照，非逐筆即時</p><ul><li><a href=\"taiex_report.html?v=$V\">大盤 K 線與隔日行情分析</a></li>"
+            if [ -f site/universe.html ]; then echo "<li><a href=\"universe.html?v=$V\">全市場篩選與評價（類股、連漲連跌、K 棒警示、圖形型態、評價）</a></li>"; fi
+            echo '</ul><p style="color:#666">規則式計算，僅供研究參考，不構成投資建議。</p><script>setTimeout(function(){location.replace(location.pathname+"?t="+Date.now())},300000)</script></body></html>'
           } > site/index.html
 
       - uses: actions/configure-pages@v5
