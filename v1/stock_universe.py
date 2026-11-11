@@ -23,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from chart_patterns import HELP, TAIL
 from stock_scores import SCORES
 from stock_screener import twse_json
 from taiex_analyzer import STATUS, UA, num, safe
@@ -256,12 +257,14 @@ details{margin-top:8px}summary{cursor:pointer;color:var(--ac)}#indbox label{disp
 <div><label>連續上漲 ≥ N 日</label><input id="upn" type="number" step="1" min="1" oninput="render()"></div>
 <div><label>連續下跌 ≥ N 日</label><input id="dnn" type="number" step="1" min="1" oninput="render()"></div>
 <div><label>K棒警示</label><select id="kb" onchange="render()"><option value="">全部</option><option value="任一">任一異常（長K／振幅大／跳空）</option><option value="長紅">長紅K</option><option value="長黑">長黑K</option><option value="振幅大">振幅特別大</option><option value="跳空">跳空缺口</option></select></div>
+<div><label>圖形型態</label><select id="pt" onchange="render()"><option value="">全部</option></select></div>
+<div><label>型態方向</label><select id="pb" onchange="render()"><option value="">全部</option><option value="多">偏多型態</option><option value="空">偏空型態</option></select></div>
 <div><label>評價總分下限</label><input id="smin" type="number" step="any" oninput="render()"></div>
 <div><label>評等</label><select id="ov" onchange="render()"><option value="">全部</option><option>偏買進</option><option>觀望偏多</option><option>中性</option><option>觀望偏空</option><option>偏賣出</option></select></div>
 <div><label>代號／名稱關鍵字</label><input id="q" oninput="render()"></div>
 <div><label>排序</label><select id="sort" onchange="render()"><option value="vol">成交量（大到小）</option><option value="yld">殖利率（高到低）</option><option value="pe">本益比（低到高）</option><option value="up">當日漲幅（大到小）</option><option value="dn">當日跌幅（大到小）</option><option value="px">股價（低到高）</option><option value="stk">連續上漲日數（多到少）</option><option value="stkd">連續下跌日數（多到少）</option><option value="c5">5日漲幅（大到小）</option><option value="c20">20日漲幅（大到小）</option><option value="tot">評價總分（高到低）</option></select></div></div>
 <div class="chk" style="margin-top:8px">類別：__KINDS__　市場：<label><input type="checkbox" class="m" value="上市" checked onchange="render()"> 上市</label><label><input type="checkbox" class="m" value="上櫃" checked onchange="render()"> 上櫃</label>
-<label><input type="checkbox" id="sc" onchange="render()">只看已評價</label><label><input type="checkbox" id="gr" onchange="render()">只留營收年成長為正</label>
+<label><input type="checkbox" id="pc" onchange="render()">只看已確認型態</label><label><input type="checkbox" id="sc" onchange="render()">只看已評價</label><label><input type="checkbox" id="gr" onchange="render()">只留營收年成長為正</label>
 <button onclick="reset()">重設條件</button></div>
 <details><summary>產業別（點開選擇，預設全選）</summary><div style="margin:6px 0"><button onclick="allInd(true)">全選</button><button onclick="allInd(false)">全不選</button></div><div id="indbox"></div></details>
 <p class="note" id="sn"></p><p class="note" id="cnt"></p><div class="w"><table id="st"></table></div></section>
@@ -289,7 +292,8 @@ details{margin-top:8px}summary{cursor:pointer;color:var(--ac)}#indbox label{disp
 const D=__DATA__;
 const $=id=>document.getElementById(id),esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const nv=id=>{const v=$(id).value.trim();return v===""?null:parseFloat(v)},fx=(x,d)=>x==null?"—":x.toFixed(d);
-const SC=D.scores||{},TR=D.trends||{},ind=s=>s[10]||"未分類";
+const SC=D.scores||{},TR=D.trends||{},SER=D.series||{},HELPD=D.help||{},ind=s=>s[10]||"未分類";
+const fe=(s,x,d)=>x==null?(s[2]==="ETF/ETN"?"<span class='note'>不適用</span>":"—"):x.toFixed(d);
 const INDS=[...new Set(D.stocks.map(ind))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
 function tab(t){["s","b","i","w","a"].forEach(k=>$("t"+k).style.display=k===t?"":"none");document.querySelectorAll(".tb").forEach(b=>b.classList.toggle("on",b.dataset.t===t))}
 const tr0=c=>TR[c]?TR[c][0]:0;
@@ -298,29 +302,40 @@ const SORT={vol:(a,b)=>b[6]-a[6],yld:(a,b)=>(b[8]==null?-1:b[8])-(a[8]==null?-1:
  tot:(a,b)=>(SC[b[0]]?SC[b[0]].tot:-99)-(SC[a[0]]?SC[a[0]].tot:-99)};
 $("indbox").innerHTML=INDS.map(n=>"<label><input type='checkbox' class='ind' value='"+esc(n)+"' checked onchange='render()'>"+esc(n)+"</label>").join("");
 function allInd(v){document.querySelectorAll(".ind").forEach(x=>x.checked=v);render()}
-function reset(){["pmax","vmin","emax","ymin","bmax","q","smin","upn","dnn"].forEach(i=>$(i).value="");$("sort").value="vol";$("ov").value="";$("kb").value="";$("sc").checked=false;$("gr").checked=false;allInd(true)}
+function reset(){["pmax","vmin","emax","ymin","bmax","q","smin","upn","dnn"].forEach(i=>$(i).value="");$("sort").value="vol";$("ov").value="";$("kb").value="";$("pt").value="";$("pb").value="";$("pc").checked=false;$("sc").checked=false;$("gr").checked=false;allInd(true)}
 function focusInd(n){document.querySelectorAll(".ind").forEach(x=>x.checked=(x.value===n));tab("s");render()}
 const li=a=>a.map(x=>"<li>"+(x[0]>0?"🔺":x[0]<0?"🔻":"➖")+" "+esc(x[1])+"（"+(x[0]>0?"+":"")+x[0]+"）</li>").join("");
 function det(c){const e=$("d_"+c);if(e)e.style.display=e.style.display==="none"?"":"none"}
+function svgChart(c){const S=SER[c];if(!S)return"";
+ const B=S.b,W=640,H=240,pl=8,pr=60,pt=8,pb=8,n=B.length;let mx=-1e9,mn=1e9;
+ B.forEach(b=>{mx=Math.max(mx,b[1]);mn=Math.min(mn,b[2])});S.l.forEach(L=>L.p.forEach(p=>{mx=Math.max(mx,p[1]);mn=Math.min(mn,p[1])}));
+ const pad=(mx-mn)*.05;mx+=pad;mn-=pad;const cw=(W-pl-pr)/n,X=i=>pl+cw*(i+.5),Y=v=>pt+(mx-v)/(mx-mn)*(H-pt-pb);
+ let o="<svg viewBox='0 0 "+W+" "+H+"' style='width:100%;max-width:760px;background:var(--bg);border:1px solid var(--bd);border-radius:6px'>";
+ B.forEach((b,i)=>{const col=b[3]>=b[0]?"#d6293e":"#1a9a52";o+="<line x1='"+X(i)+"' x2='"+X(i)+"' y1='"+Y(b[1])+"' y2='"+Y(b[2])+"' stroke='"+col+"'/><rect x='"+(X(i)-cw*.35)+"' width='"+cw*.7+"' y='"+Y(Math.max(b[0],b[3]))+"' height='"+Math.max(1,Math.abs(Y(b[0])-Y(b[3])))+"' fill='"+col+"'/>"});
+ S.l.forEach(L=>{const q=L.p.map(p=>[X(Math.min(Math.max(p[0],0),n-1)),Y(p[1])]);o+="<polyline fill='none' stroke='#8e44ad' stroke-width='1.6' stroke-dasharray='5 3' points='"+q.map(a=>a.join(",")).join(" ")+"'/><text x='"+(W-pr+3)+"' y='"+(q[q.length-1][1]+3)+"' font-size='10' fill='#8e44ad'>"+esc(L.t)+"</text>"});
+ return o+"</svg><p class='note'>紫色虛線為型態線（頸線、壓力線、支撐線等），最近 "+n+" 根日K。</p>"}
+function patHtml(c,pats){let h="<p><b>圖形型態：</b>"+esc(pats.join("、"))+"</p>"+svgChart(c);
+ pats.forEach(x=>{const b=x.replace(/[(].*$/,"");if(HELPD[b])h+="<p class='note'><b>"+esc(b)+"</b>："+esc(HELPD[b])+"</p>"});return h}
 function detHtml(c){const k=SC[c],t=TR[c];let h="";
+ if(t&&t[5]&&t[5].length)h+=patHtml(c,t[5]);
  if(t)h+="<p><b>走勢：</b>"+(t[0]>0?"連續上漲 "+t[0]+" 日":t[0]<0?"連續下跌 "+(-t[0])+" 日":"無連續漲跌")+"；5日 "+t[1]+"%、20日 "+t[2]+"%"+(t[3]?"；K棒警示："+esc(t[3]):"")+"（最新K棒實體 "+t[4]+"%）</p>";
  if(!k)return h+"此檔尚無深入評價資料。";
  return h+"<b>基本面 "+k.fs+"</b><ul>"+(li(k.F)||"<li>Yahoo 無財報資料，不計分</li>")+"</ul><b>技術面 "+k.ts+"</b><ul>"+li(k.T)+"</ul><b>消息面 "+k.ns+"</b><ul>"+(li(k.N)||"<li>無新聞資料</li>")+"</ul>"+
  (k.news.length?"<b>相關新聞</b><ul>"+k.news.map(n=>"<li><a href='"+(/^https?:/.test(n[1])?esc(n[1]):"#")+"' target='_blank' rel='noopener'>"+esc(n[0])+"</a></li>").join("")+"</ul>":"")+
  "<p class='note'>近20日壓力 "+k.hi.toFixed(2)+"、支撐 "+k.lo.toFixed(2)+"；評價時間 "+esc(k.t)+"。規則式評分，不是買賣建議。</p>"}
 function render(){
- const pm=nv("pmax"),vm=nv("vmin"),em=nv("emax"),ym=nv("ymin"),bm=nv("bmax"),sm=nv("smin"),un=nv("upn"),dn=nv("dnn"),kb=$("kb").value,ov=$("ov").value,gr=$("gr").checked,so=$("sc").checked,q=$("q").value.trim().toLowerCase();
+ const pm=nv("pmax"),vm=nv("vmin"),em=nv("emax"),ym=nv("ymin"),bm=nv("bmax"),sm=nv("smin"),un=nv("upn"),dn=nv("dnn"),kb=$("kb").value,ov=$("ov").value,gr=$("gr").checked,so=$("sc").checked,q=$("q").value.trim().toLowerCase(),pt=$("pt").value,pb=$("pb").value,pc=$("pc").checked;
  const ks=[...document.querySelectorAll(".k:checked")].map(x=>x.value),ms=[...document.querySelectorAll(".m:checked")].map(x=>x.value);
  const isel=new Set([...document.querySelectorAll(".ind:checked")].map(x=>x.value)),ifilt=isel.size<INDS.length;
- const r=D.stocks.filter(s=>{const k=SC[s[0]],t=TR[s[0]];return ks.includes(s[2])&&ms.includes(s[3])&&(!ifilt||isel.has(ind(s)))&&(pm==null||s[4]<=pm)&&(vm==null||s[6]>=vm)&&(em==null||(s[7]!=null&&s[7]>0&&s[7]<=em))&&(ym==null||(s[8]!=null&&s[8]>=ym))&&(bm==null||(s[9]!=null&&s[9]<=bm))&&(!q||(s[0]+s[1]).toLowerCase().includes(q))
-  &&(un==null||(t&&t[0]>=un))&&(dn==null||(t&&t[0]<=-dn))&&(!kb||(t&&t[3]&&(kb==="任一"||t[3].includes(kb))))
+ const r=D.stocks.filter(s=>{const k=SC[s[0]],t=TR[s[0]],pats=(t&&t[5])||[];return ks.includes(s[2])&&ms.includes(s[3])&&(!ifilt||isel.has(ind(s)))&&(pm==null||s[4]<=pm)&&(vm==null||s[6]>=vm)&&(em==null||(s[7]!=null&&s[7]>0&&s[7]<=em))&&(ym==null||(s[8]!=null&&s[8]>=ym))&&(bm==null||(s[9]!=null&&s[9]<=bm))&&(!q||(s[0]+s[1]).toLowerCase().includes(q))
+  &&(un==null||(t&&t[0]>=un))&&(dn==null||(t&&t[0]<=-dn))&&(!kb||(t&&t[3]&&(kb==="任一"||t[3].includes(kb))))&&(!pt||pats.some(x=>x.startsWith(pt)))&&(!pb||pats.some(x=>x.includes("("+pb+")")))&&(!pc||pats.some(x=>x.includes("✓")))
   &&(!so||k)&&(sm==null||(k&&k.tot>=sm))&&(!ov||(k&&k.ov===ov))&&(!gr||(k&&k.gr!=null&&k.gr>0))}).sort(SORT[$("sort").value]);
  $("cnt").textContent="符合 "+r.length+" 檔"+(r.length>300?"（僅顯示前 300 檔，請加條件縮小）":"")+"｜點任一列可展開走勢與評價理由";
- $("st").innerHTML="<tr><th>代號</th><th>名稱</th><th>產業</th><th>類別</th><th>市場</th><th>現價</th><th>漲跌%</th><th>量(張)</th><th>連續</th><th>5日%</th><th>20日%</th><th>K棒警示</th><th>本益比</th><th>殖利率%</th><th>淨值比</th><th>基本面</th><th>技術面</th><th>消息</th><th>總分</th><th>評等</th></tr>"+
- r.slice(0,300).map(s=>{const k=SC[s[0]],t=TR[s[0]],c=esc(s[0]),cl=k?(/買|多/.test(k.ov)?"up":/賣|空/.test(k.ov)?"dn":""):"";
+ $("st").innerHTML="<tr><th>代號</th><th>名稱</th><th>產業</th><th>類別</th><th>市場</th><th>現價</th><th>漲跌%</th><th>量(張)</th><th>連續</th><th>5日%</th><th>20日%</th><th>K棒警示</th><th>圖形型態</th><th>本益比</th><th>殖利率%</th><th>淨值比</th><th>基本面</th><th>技術面</th><th>消息</th><th>總分</th><th>評等</th></tr>"+
+ r.slice(0,300).map(s=>{const k=SC[s[0]],t=TR[s[0]],c=esc(s[0]),pats=(t&&t[5])||[],na=s[2]==="ETF/ETN"?"<span class='note'>不適用</span>":"—",cl=k?(/買|多/.test(k.ov)?"up":/賣|空/.test(k.ov)?"dn":""):"";
   const stk=t?(t[0]>0?"<span class='up'>▲"+t[0]+"</span>":t[0]<0?"<span class='dn'>▼"+(-t[0])+"</span>":"—"):"—";
   const pc=v=>v==null?"—":"<span class='"+(v>0?"up":v<0?"dn":"")+"'>"+(v>0?"+":"")+v+"</span>";
-  return "<tr data-c='"+c+"' onclick='det(this.dataset.c)' style='cursor:pointer'><td><a href='https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID="+c+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+c+"</a></td><td>"+esc(s[1])+"</td><td>"+esc(ind(s))+"</td><td>"+s[2]+"</td><td>"+s[3]+"</td><td>"+fx(s[4],2)+"</td><td class='"+(s[5]>0?"up":s[5]<0?"dn":"")+"'>"+(s[5]>0?"+":"")+s[5].toFixed(2)+"</td><td>"+s[6].toLocaleString()+"</td><td>"+stk+"</td><td>"+pc(t?t[1]:null)+"</td><td>"+pc(t?t[2]:null)+"</td><td>"+(t&&t[3]?esc(t[3]):"—")+"</td><td>"+fx(s[7],1)+"</td><td>"+fx(s[8],2)+"</td><td>"+fx(s[9],2)+"</td><td>"+(k?k.fs:"—")+"</td><td>"+(k?k.ts:"—")+"</td><td>"+(k?k.ns:"—")+"</td><td>"+(k?"<b>"+k.tot+"</b>":"—")+"</td><td class='"+cl+"'>"+(k?k.ov:"—")+"</td></tr><tr id='d_"+c+"' style='display:none'><td colspan='20' style='white-space:normal'>"+detHtml(s[0])+"</td></tr>"}).join("")}
+  return "<tr data-c='"+c+"' onclick='det(this.dataset.c)' style='cursor:pointer'><td><a href='https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID="+c+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+c+"</a></td><td>"+esc(s[1])+"</td><td>"+esc(ind(s))+"</td><td>"+s[2]+"</td><td>"+s[3]+"</td><td>"+fx(s[4],2)+"</td><td class='"+(s[5]>0?"up":s[5]<0?"dn":"")+"'>"+(s[5]>0?"+":"")+s[5].toFixed(2)+"</td><td>"+s[6].toLocaleString()+"</td><td>"+stk+"</td><td>"+pc(t?t[1]:null)+"</td><td>"+pc(t?t[2]:null)+"</td><td>"+(t&&t[3]?esc(t[3]):"—")+"</td><td>"+(pats.length?esc(pats.join("、")):"—")+"</td><td>"+fe(s,s[7],1)+"</td><td>"+fe(s,s[8],2)+"</td><td>"+fe(s,s[9],2)+"</td><td>"+(k?k.fs:na)+"</td><td>"+(k?k.ts:na)+"</td><td>"+(k?k.ns:na)+"</td><td>"+(k?"<b>"+k.tot+"</b>":na)+"</td><td class='"+cl+"'>"+(k?k.ov:na)+"</td></tr><tr id='d_"+c+"' style='display:none'><td colspan='21' style='white-space:normal'>"+detHtml(s[0])+"</td></tr>"}).join("")}
 function renderB(){const g={};D.stocks.filter(s=>s[2]==="股票").forEach(s=>{const n=ind(s),o=g[n]||(g[n]={n,c:0,p:0,u:0,d:0,v:0});o.c++;o.p+=s[5];o.v+=s[6];if(s[5]>0)o.u++;else if(s[5]<0)o.d++});
  const a=Object.values(g).map(o=>({...o,avg:o.p/o.c})).sort((x,y)=>y.avg-x.avg);
  $("btb").innerHTML="<tr><th>產業</th><th>檔數</th><th>平均漲跌%</th><th>上漲</th><th>下跌</th><th>總成交量(張)</th></tr>"+a.map(o=>"<tr><td><a href='#' onclick=\\"focusInd(this.dataset.n);return false\\" data-n='"+esc(o.n)+"'>"+esc(o.n)+"</a></td><td>"+o.c+"</td><td class='"+(o.avg>0?"up":o.avg<0?"dn":"")+"'>"+(o.avg>0?"+":"")+o.avg.toFixed(2)+"</td><td>"+o.u+"</td><td>"+o.d+"</td><td>"+o.v.toLocaleString()+"</td></tr>").join("")}
@@ -339,6 +354,8 @@ function renderW(){
  $("cnt2").textContent=D.warrants.length?("符合 "+r.length+" 檔"+(r.length>300?"（僅顯示前 300 檔，請加關鍵字）":"")):"本次未取得權證資料（見下方資料來源狀態）";
  $("wtb").innerHTML=D.warrants.length?"<tr><th>代號</th><th>簡稱</th><th>類型</th><th>標的</th><th>履約價</th><th>最後交易日</th><th>履約截止日</th></tr>"+r.slice(0,300).map(w=>"<tr>"+w.map(x=>"<td>"+esc(x)+"</td>").join("")+"</tr>").join(""):""}
 function renderA(){const a=D.apply;$("atb").innerHTML=a&&a.rows.length?"<tr>"+a.cols.map(c=>"<th>"+esc(c)+"</th>").join("")+"</tr>"+a.rows.map(r=>"<tr>"+r.map(x=>"<td>"+esc(x)+"</td>").join("")+"</tr>").join(""):"<tr><td>本次未取得申請上市資料（見下方資料來源狀態）</td></tr>"}
+const PN=[...new Set(Object.values(TR).flatMap(t=>(t[5]||[]).map(x=>x.replace(/[(].*$/,""))))].sort();
+$("pt").innerHTML+=PN.map(n=>"<option>"+esc(n)+"</option>").join("");
 const nsc=Object.keys(SC).length,ntr=Object.keys(TR).length;
 $("sn").textContent=(nsc?("深入評價 "+nsc+" 檔（評價時間 "+(D.scored_at||"—")+"；依股價區間取成交量較大者，其餘顯示「—」）。"):"尚未取得深入評價資料。")+(ntr?("走勢統計 "+ntr+" 檔（"+(D.trends_at||"—")+"；連續漲跌依日K計算，盤中含當日最新價）。"):"尚未取得走勢統計。")+"ETF 沒有本益比、殖利率與財報，因此這些欄位顯示「—」。評價為規則式評分，不是買賣建議。";
 $("ii").innerHTML+=INDS.map(n=>"<option>"+esc(n)+"</option>").join("");
@@ -363,7 +380,7 @@ def main():
     war = [] if a.no_warrants else (safe("上市權證基本資料(t187ap37_L)", warrants) or [])
     app = safe("申請上市公司(applylistingLocal)", applying)
     scores, scored_at, _ = load_cache(SCORES)
-    trends, trends_at, _ = load_cache(TRENDS)
+    trends, trends_at, tj = load_cache(TRENDS)
     STATUS.append(("深入評價快取(cache/scores.json)", bool(scores), f"{len(scores)} 檔" if scores else "尚無快取或讀取失敗"))
     STATUS.append(("走勢統計快取(cache/trends.json)", bool(trends), f"{len(trends)} 檔" if trends else "尚無快取或讀取失敗"))
     order = ["股票", "ETF/ETN", "特別股", "TDR", "其他"]
@@ -371,7 +388,8 @@ def main():
     kh = "".join(f'<label><input type="checkbox" class="k" value="{k}" {"checked" if k in ("股票", "ETF/ETN") else ""} onchange="render()"> {k}</label>' for k in kinds)
     st = "".join(f'<tr><td>{html.escape(n)}</td><td>{"成功" if ok else "失敗"}</td><td>{html.escape(m)}</td></tr>' for n, ok, m in STATUS)
     data = json.dumps({"stocks": stocks, "warrants": war, "apply": app, "scores": scores, "scored_at": scored_at,
-                       "trends": trends, "trends_at": trends_at, "inst": inst}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+                       "trends": trends, "trends_at": trends_at, "inst": inst,
+                       "series": tj.get("series", {}), "help": {k: v for k, v in HELP.items()}, "pattern_tail": TAIL}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     src = f"證交所即時（{rt[1]}，覆蓋 {rt[0]} 檔，其餘為最近收盤）" if rt else "最近一個交易日的收盤價（即時報價抓不到或非開盤時段）"
     page = (PAGE.replace("__DATA__", data).replace("__KINDS__", kh).replace("__STATUS__", st)
             .replace("__NOW__", f"{dt.datetime.now():%Y-%m-%d %H:%M}").replace("__DATE__", html.escape(src)))

@@ -31,6 +31,8 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import chart_patterns as CP
+
 UA = {"User-Agent": "Mozilla/5.0 (compatible; TaiexAnalyzer/1.0)"}
 UP, DN = "#d6293e", "#1a9a52"          # 台股習慣：紅漲綠跌
 MA_COLORS = ["#e0a800", "#2b6cb0", "#9b59b6", "#e67e22"]
@@ -229,6 +231,14 @@ def tech(df):
     if va and va > 0 and v.iloc[-1] > va * 1.3:
         up_day = last > c.iloc[-2]
         add(1 if up_day else -1, f"量能放大({v.iloc[-1] / va:.1f}倍5日均量)，{'價漲量增' if up_day else '價跌量增，賣壓偏重'}")
+    v5, vp = v.iloc[-5:].mean(), v.iloc[-10:-5].mean()
+    pc5 = c.iloc[-1] / c.iloc[-6] - 1
+    if v5 > 0 and vp > 0:
+        vr = v5 / vp
+        if pc5 > 0.01:
+            add(1, f"量價配合：近5日價漲量增（量為前5日 {vr:.2f} 倍）") if vr > 1.15 else add(-1, f"量價背離：近5日價漲量縮（量為前5日 {vr:.2f} 倍），上攻力道待確認") if vr < 0.85 else None
+        elif pc5 < -0.01:
+            add(-1, f"近5日價跌量增（量為前5日 {vr:.2f} 倍），賣壓偏重") if vr > 1.15 else add(0, f"近5日價跌量縮（量為前5日 {vr:.2f} 倍），賣壓有減輕跡象") if vr < 0.85 else None
     info = {"last": last, "pct": (last / c.iloc[-2] - 1) * 100, "date": df.index[-1].date(),
             "hi": float(df["High"].tail(20).max()), "lo": float(df["Low"].tail(20).min())}
     return R, info
@@ -304,7 +314,7 @@ def resample(df, rule):
         return df.resample(rule.replace("ME", "M")).agg(agg).dropna()
 
 
-def chart(df, title, mas, names, show, daily=False, first=False):
+def chart(df, title, mas, names, show, daily=False, first=False, overlays=None):
     d = df.copy()
     for n, nm in zip(mas, names):
         d[nm] = d["Close"].rolling(n).mean()
@@ -317,6 +327,11 @@ def chart(df, title, mas, names, show, daily=False, first=False):
         fig.add_trace(go.Scatter(x=d.index, y=d[nm], name=nm, line=dict(width=1.5, color=col)), 1, 1)
     fig.add_trace(go.Bar(x=d.index, y=d["Volume"], name="成交量",
                          marker_color=[UP if c >= o else DN for o, c in zip(d["Open"], d["Close"])]), 2, 1)
+    for pt in overlays or []:
+        for ln in pt["lines"]:
+            xs = [df.index[min(max(i, 0), len(df) - 1)] for i, _ in ln["pts"]]
+            fig.add_trace(go.Scatter(x=xs, y=[y for _, y in ln["pts"]], mode="lines", name=f'{pt["name"]}·{ln["label"]}',
+                                     line=dict(width=2, dash="dash", color="#8e44ad")), 1, 1)
     fig.update_layout(title=title, height=640, template="plotly_white", xaxis_rangeslider_visible=False,
                       hovermode="x unified", legend=dict(orientation="h"), margin=dict(l=50, r=20, t=60, b=30))
     if daily:
@@ -472,10 +487,12 @@ def build(refresh=0):
 
     T, info = tech(df)
     K = kbar(df)
+    PT = CP.detect(df)
+    ps = CP.score(PT)
     M, N = macro_score(Q, rt, inst, fut, nws, info["date"])
     ts, ms, ns = (sum(p for p, _ in x) for x in (T, M, N))
     ks = max(-3, min(3, sum(p for p, _ in K)))
-    tot = ts + ks + ms + ns
+    tot = ts + ks + ps + ms + ns
     label, c = ("偏多", "up") if tot >= 6 else ("小幅偏多", "up") if tot >= 2 else ("區間震盪", "") if tot >= -1 else \
         ("小幅偏空", "dn") if tot >= -5 else ("偏空", "dn")
 
@@ -498,14 +515,20 @@ def build(refresh=0):
                     ("S&P500", "那斯達克", "費城半導體", "台積電ADR", "EWT台灣ETF(美股)", "S&P500期貨", "那斯達克期貨", "VIX恐慌指數", "美元/台幣") if k in Q)
     if chips:
         p.append(f'<div class="note">海外最新（相對前一收盤，Yahoo 可能延遲）：{chips}<br>美股現金交易時段約台灣時間 22:30～05:00（冬令；夏令為 21:30～04:00），期貨近 24 小時交易，晚上的隔日台股判斷以美股、期貨與 EWT 為主。</div>')
-    p.append(f'<div class="big">隔日預判：<span class="{c}">{label}</span>（總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
+    p.append(f'<div class="big">隔日預判：<span class="{c}">{label}</span>（總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋圖形型態 {ps:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
     p.append(f'<p>近20日壓力約 <b>{info["hi"]:,.0f}</b>，支撐約 <b>{info["lo"]:,.0f}</b>；有效突破壓力偏多，跌破支撐轉弱。</p></div>')
     p.append('<div class="card"><h2>K 線圖</h2>')
-    p.append(chart(df, "日K（月線 MA20／季線 MA60／年線 MA240）", [5, 20, 60, 240], ["週線MA5", "月線MA20", "季線MA60", "年線MA240"], 250, True, True))
+    p.append(chart(df, "日K（月線 MA20／季線 MA60／年線 MA240）", [5, 20, 60, 240], ["週線MA5", "月線MA20", "季線MA60", "年線MA240"], 250, True, True, PT))
     p.append(chart(resample(df, "W-FRI"), "週K", [5, 13, 26, 52], ["MA5週", "MA13週(季)", "MA26週(半年)", "MA52週(年)"], 156))
     p.append(chart(resample(df, "ME"), "月K", [3, 6, 12, 24], ["MA3月", "MA6月", "MA12月(年)", "MA24月"], 120))
     p.append("</div>")
     p.append(f'<div class="card"><h2>K棒型態分析（日K，看最近 1～3 根）</h2><ul>{li(K)}</ul><p class="note">型態需搭配所處位置與量能判讀，單一型態可靠度有限；K棒型態分數最多計 ±3 分。</p></div>')
+    if PT:
+        cards = "".join(f'<li><b class="{cls(q["bias"])}">{html.escape(q["name"])}（{"偏多" if q["bias"] > 0 else "偏空" if q["bias"] < 0 else "中性"}'
+                        f'{"、已確認" if q["confirmed"] else "、形成中"}）</b>：{html.escape(q["status"])}<br><span class="note">{html.escape(q["help"])}</span></li>' for q in PT)
+        p.append(f'<div class="card"><h2>圖形型態分析（日K，紫色虛線已畫在日K圖上）</h2><ul>{cards}</ul><p class="note">依 IG 與學吧介紹的常見型態做規則式辨識，已確認計 ±2、形成中計 ±1，合計最多 ±3 分；容易有誤判與失敗，請搭配成交量與停損。</p></div>')
+    else:
+        p.append('<div class="card"><h2>圖形型態分析（日K）</h2><p class="note">目前沒有符合條件的明確型態（頭肩、雙頂底、圓底、杯柄、楔形、旗形、三角形、矩形、通道）。</p></div>')
     p.append(f'<div class="card"><h2>技術面（日K）</h2><ul>{li(T)}</ul></div>')
     p.append(f'<div class="card"><h2>國際、期貨、匯率與資金面</h2><ul>{li(M) or "<li>無資料</li>"}</ul>')
     p.append(f'<h2>消息面</h2><ul>{li(N) or "<li>無新聞資料</li>"}</ul></div>')
