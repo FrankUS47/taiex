@@ -143,6 +143,12 @@ def industries_otc():
     return m
 
 
+def _sum_levels(x):
+    v = [num(t) for t in str(x or "").split("_") if t]
+    v = [t for t in v if t is not None]
+    return sum(v) if v else None
+
+
 def realtime_overlay(stocks):
     """用證交所即時報價覆蓋收盤價（盤中才有意義；抓不到就保留收盤價）。
     小批次抓取並重試，成交量大的優先；連續 3 批沒資料就停止。回傳 (覆蓋檔數, 報價時間, 嘗試檔數)。"""
@@ -180,6 +186,9 @@ def realtime_overlay(stocks):
                 r[4], r[5] = z, round((z - y) / y * 100, 2)
                 if v is not None:
                     r[6] = round(v)
+                bt, at = _sum_levels(m.get("g")), _sum_levels(m.get("f"))   # 最佳五檔：委買總量、委賣總量（張）
+                if bt is not None and at is not None:
+                    r[11], r[12] = round(bt), round(at)
                 n += 1
                 stamp = max(stamp, f"{m.get('d', '')} {m.get('t', '')}")
         time.sleep(0.6)
@@ -216,6 +225,50 @@ def institutional_by_stock():
                 return {"date": d.isoformat(), "rows": rows}
         d -= dt.timedelta(days=1)
     raise RuntimeError("近 10 天查無三大法人個股買賣超資料")
+
+
+def warrant_rows(top=400):
+    """上市權證收盤行情（證交所 MI_INDEX，type=0999），取成交金額前 top 檔，並併入權證基本資料。"""
+    d, hit = dt.date.today(), None
+    for _ in range(7):
+        if d.weekday() < 5:
+            j = requests.get("https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX",
+                             params={"date": d.strftime("%Y%m%d"), "type": "0999", "response": "json"}, headers=UA, timeout=40).json()
+            for t in j.get("tables") or []:
+                f = t.get("fields") or []
+                if "證券代號" in f and "收盤價" in f and t.get("data"):
+                    hit = (t, d)
+                    break
+        if hit:
+            break
+        d -= dt.timedelta(days=1)
+    if not hit:
+        raise RuntimeError("查無權證收盤行情（type=0999）")
+    t, day = hit
+    f = t["fields"]
+    ix = lambda k: f.index(k) if k in f else None
+    ic, inm, iv, ia, ip = ix("證券代號"), ix("證券名稱"), ix("成交股數"), ix("成交金額"), ix("收盤價")
+    isg, idf = ix("漲跌(+/-)"), ix("漲跌價差")
+    if None in (ic, inm, iv, ip):
+        raise RuntimeError(f"欄位不符：{f}")
+    rows = []
+    for r in t["data"]:
+        close, shares = num(r[ip]), num(r[iv]) or 0
+        if not close or close <= 0 or shares <= 0:
+            continue
+        diff = num(r[idf]) if idf is not None else 0
+        chg = (-(diff or 0) if (isg is not None and "-" in str(r[isg])) else (diff or 0))
+        prev = close - chg
+        pct = round(chg / prev * 100, 2) if prev > 0 else 0.0
+        rows.append(((num(r[ia]) if ia is not None else 0) or 0, [str(r[ic]).strip(), str(r[inm]).strip(), "權證", "上市", close, pct,
+                                                                round(shares / 1000), None, None, None, "權證", None, None]))
+    rows = [x[1] for x in sorted(rows, key=lambda x: -x[0])[:top]]
+    info = {}
+    for r in safe("權證基本資料(t187ap37_L，併入行情)", twse_json, "opendata/t187ap37_L") or []:
+        c = str(r.get("權證代號", "")).strip()
+        if c:
+            info[c] = [r.get("權證類型", ""), r.get("標的證券/指數", ""), r.get("最新履約價格(元)/履約指數", ""), r.get("最後交易日", "")]
+    return rows, {c: info.get(c, ["", "", "", ""]) for c in (x[0] for x in rows)}, day.isoformat()
 
 
 def warrants():
@@ -267,6 +320,9 @@ details{margin-top:8px}summary{cursor:pointer;color:var(--ac)}#indbox label{disp
 th.c-code,td.c-code{position:sticky;left:0;background:var(--card);z-index:2;min-width:64px}
 th.c-name,td.c-name{position:sticky;left:64px;background:var(--card);z-index:2;box-shadow:2px 0 3px rgba(0,0,0,.08)}
 .bd{display:inline-block;padding:1px 8px;border-radius:10px;font-weight:600}#colbox label{display:inline-block;margin:2px 10px 2px 0;font-size:14px;color:var(--tx)}
+.chip{display:inline-block;padding:0 7px;border-radius:9px;margin:1px 2px;cursor:pointer;font-size:12px;border:1px solid transparent}
+.chip.up{background:rgba(214,41,62,.15);color:var(--up);border-color:var(--up)}.chip.dn{background:rgba(26,154,82,.15);color:var(--dn);border-color:var(--dn)}.chip.mid{background:rgba(130,138,155,.2);color:var(--tx);border-color:var(--bd)}
+#pop{display:none;position:fixed;right:12px;bottom:12px;width:min(540px,92vw);max-height:72vh;overflow:auto;background:var(--card);color:var(--tx);border:1px solid var(--ac);border-radius:10px;padding:12px;box-shadow:0 4px 18px rgba(0,0,0,.3);z-index:50}
 </style></head><body><main>
 <h1>🔎 全市場篩選與評價（上市、上櫃、ETF、權證、申請上市）</h1>
 <p style="font-size:15px">📍 <a class="nv" href="taiex_report.html">大盤分析</a>｜<a class="nv" href="universe.html"><b>🔎 全市場篩選與評價</b></a></p>
@@ -315,13 +371,14 @@ th.c-name,td.c-name{position:sticky;left:64px;background:var(--card);z-index:2;b
 
 <section id="ta" class="card" style="display:none"><p class="note">證交所公開的本國公司申請上市清單（欄位依證交所原始資料；此資料集曾有欄位錯位，程式已自動校正，仍請以證交所官網為準）。申請上櫃與公開申購（抽籤）資訊本頁未涵蓋。</p><div class="w"><table id="atb"></table></div></section>
 
+<div id="pop"><button style="float:right" onclick="popClose()">關閉</button><div id="popb"></div></div>
 <div class="card"><b>資料來源狀態</b><table>__STATUS__</table></div>
 </main><script>
 const D=__DATA__;
 const $=id=>document.getElementById(id),esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const nv=id=>{const v=$(id).value.trim();return v===""?null:parseFloat(v)},fx=(x,d)=>x==null?"—":x.toFixed(d);
 const SC=D.scores||{},TR=D.trends||{},SER=D.series||{},HELPD=D.help||{},ETF=D.etf||{},ind=s=>s[10]||"未分類";
-const fe=(s,x,d)=>x==null?(s[2]==="ETF/ETN"?"<span class='note'>不適用</span>":"—"):x.toFixed(d);
+const fe=(s,x,d)=>x==null?((s[2]==="ETF/ETN"||s[2]==="權證")?"<span class='note'>不適用</span>":"—"):x.toFixed(d);
 const INDS=[...new Set(D.stocks.map(ind))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
 function tab(t){["s","b","i","w","a"].forEach(k=>$("t"+k).style.display=k===t?"":"none");document.querySelectorAll(".tb").forEach(b=>b.classList.toggle("on",b.dataset.t===t))}
 const tr0=c=>TR[c]?TR[c][0]:0;
@@ -346,53 +403,119 @@ function patHtml(c,pats){let h="<p><b>圖形型態：</b>"+esc(pats.join("、"))
  pats.forEach(x=>{const b=x.replace(/[(].*$/,"");if(HELPD[b])h+="<p class='note'><b>"+esc(b)+"</b>："+esc(HELPD[b])+"</p>"});return h}
 function etfHtml(c){const e=ETF[c];if(!e)return"";const f=(x,d)=>x==null?"—":x.toFixed(d);
  return "<p><b>ETF 資料（Yahoo）：</b>淨值 "+f(e.nav,2)+"｜折溢價 "+(e.pn==null?"—":((e.pn-1)*100).toFixed(2)+"%")+"｜規模 "+(e.aum==null?"—":(e.aum/1e8).toFixed(1)+" 億")+"｜殖利率 "+f(e.y,2)+"%｜持股本益比 "+f(e.pe,1)+"</p>"}
-function detHtml(c){const k=SC[c],t=TR[c];let h=etfHtml(c);
+function detHtml(c){const k=SC[c],t=TR[c];let h=anaHtml(c)+warrHtml(c)+etfHtml(c);
  if(t&&t[5]&&t[5].length)h+=patHtml(c,t[5]);
  if(t)h+="<p><b>走勢：</b>"+(t[0]>0?"連續上漲 "+t[0]+" 日":t[0]<0?"連續下跌 "+(-t[0])+" 日":"無連續漲跌")+"；5日 "+t[1]+"%、20日 "+t[2]+"%"+(t[3]?"；K棒警示："+esc(t[3]):"")+"（最新K棒實體 "+t[4]+"%）</p>";
  if(!k)return h+"此檔尚無深入評價資料。";
  return h+"<b>基本面 "+k.fs+"</b><ul>"+(li(k.F)||"<li>Yahoo 無財報資料，不計分</li>")+"</ul><b>技術面 "+k.ts+"</b><ul>"+li(k.T)+"</ul><b>消息面 "+k.ns+"</b><ul>"+(li(k.N)||"<li>無新聞資料</li>")+"</ul>"+
  (k.news.length?"<b>相關新聞</b><ul>"+k.news.map(n=>"<li><a href='"+(/^https?:/.test(n[1])?esc(n[1]):"#")+"' target='_blank' rel='noopener'>"+esc(n[0])+"</a></li>").join("")+"</ul>":"")+
  "<p class='note'>近20日壓力 "+k.hi.toFixed(2)+"、支撐 "+k.lo.toFixed(2)+"；評價時間 "+esc(k.t)+"。規則式評分，不是買賣建議。</p>"}
-var SORTC={k:null,d:1},HID=new Set(["kind","mkt","ns"]);
-try{const j=JSON.parse(localStorage.getItem("uni_hid")||"null");if(Array.isArray(j))HID=new Set(j)}catch(e){}
-const na=s=>s[2]==="ETF/ETN"?"<span class='note'>不適用</span>":"—";
+var SORTC={k:null,d:1},HID=new Set(["kind","mkt","ns","bt","at","dl","tot3"]);
+try{const j=JSON.parse(localStorage.getItem("uni_hid2")||"null");if(Array.isArray(j))HID=new Set(j)}catch(e){}
+const ROWS={},NAMES={},INST={},WARR=D.warr||{};
+D.stocks.forEach(s=>{ROWS[s[0]]=s;NAMES[s[1]]=s});
+if(D.inst&&D.inst.rows)D.inst.rows.forEach(x=>{INST[x[0]]=x});
+const na=s=>(s[2]==="ETF/ETN"||s[2]==="權證")?"<span class='note'>不適用</span>":"—";
 const pcs=v=>v==null?"—":"<span class='"+(v>0?"up":v<0?"dn":"")+"'>"+(v>0?"+":"")+v+"</span>";
-const rankOv={"偏買進":2,"觀望偏多":1,"中性":0,"觀望偏空":-1,"偏賣出":-2};
-function techPct(c){const t=TR[c];if(!t)return null;let p=0;
- (t[5]||[]).forEach(x=>{const sg=x.includes("(多)")?1:x.includes("(空)")?-1:0;p+=sg*(x.includes("✓")?2:1)});
- if(t[0]>=3)p+=1;else if(t[0]<=-3)p-=1;if(t[2]!=null){if(t[2]>5)p+=1;else if(t[2]<-5)p-=1}
- const kb=t[3]||"";if(kb.includes("長紅"))p+=1;if(kb.includes("長黑"))p-=1;if(kb.includes("跳空漲"))p+=1;if(kb.includes("跳空跌"))p-=1;
- return Math.max(-100,Math.min(100,Math.round(p/6*100)))}
-function tendPct(c){const k=SC[c];return k?Math.max(-100,Math.min(100,Math.round(k.tot/10*100))):null}
+const clampP=x=>Math.max(-100,Math.min(100,Math.round(x)));
+const labelPct=p=>p>=60?"偏買進":p>=20?"觀望偏多":p>-20?"中性":p>-60?"觀望偏空":"偏賣出";
+const KDEF={"長紅":["up","長紅K","最新一根日K為紅K，實體至少是近20日平均實體的2倍，且實體占整根K棒振幅60%以上，代表買盤強勢。常見原因包括利多消息、法人買超、突破關鍵價位或軋空；漲多後的長紅也可能是短線過熱，要看隔日是否延續。"],
+ "長黑":["dn","長黑K","最新一根日K為黑K，實體至少是近20日平均實體的2倍，且實體占整根K棒振幅60%以上，代表賣壓沉重。常見原因包括利空消息、法人賣超、跌破支撐或停損賣壓；跌深後的長黑也可能是恐慌殺盤，需觀察是否止跌。"],
+ "振幅大":["mid","振幅特別大","最新K棒的高低價差至少是近20日平均振幅的2倍，代表多空劇烈拉鋸，常見於消息發酵、除權息、題材輪動或法人調節；方向要看收盤相對開盤的位置。"],
+ "跳空漲":["up","向上跳空缺口","今天最低價高於昨天最高價，中間出現沒有成交的缺口，常見於開盤前利多或隔夜國際市場走強。缺口可能是支撐，但被回補時代表漲勢轉弱。"],
+ "跳空跌":["dn","向下跳空缺口","今天最高價低於昨天最低價，中間出現沒有成交的缺口，常見於開盤前利空或隔夜國際市場走弱。缺口可能成為壓力，但被回補時代表跌勢趨緩。"]};
+function daysLeft(x){const d=String(x||"").replace(/[^0-9]/g,"");if(d.length<6)return null;
+ const y=d.length===7?+d.slice(0,3)+1911:+d.slice(0,4),m=+d.slice(d.length-4,d.length-2)-1,dd=+d.slice(d.length-2);return Math.ceil((new Date(y,m,dd)-new Date())/86400000)}
+function findU(u){u=String(u||"").trim();if(!u)return null;if(ROWS[u])return ROWS[u];if(NAMES[u])return NAMES[u];
+ const m=u.match(/[0-9]{4}/);if(m&&ROWS[m[0]])return ROWS[m[0]];const k=Object.keys(NAMES).find(n=>n.length>=2&&(u.startsWith(n)||n.startsWith(u)));return k?NAMES[k]:null}
+const ANM={};
+function analysis(c){if(ANM[c])return ANM[c];const s=ROWS[c],items=[],add=(g,p,t)=>items.push({g:g,p:p,t:t}),k=SC[c],t=TR[c];ANM[c]={items:[],total:0,pct:0,lab:"中性"};
+ if(k){k.F.forEach(x=>add("基本面",x[0],x[1]));k.T.forEach(x=>add("技術面（評價）",x[0],x[1]));k.N.forEach(x=>add("消息面",x[0],x[1]))}
+ if(t){(t[5]||[]).forEach(x=>{const b=x.replace(/[(].*$/,""),sg=x.includes("(多)")?1:x.includes("(空)")?-1:0,cf=x.includes("✓");add("圖形型態",sg*(cf?2:1),b+(sg>0?"（偏多":sg<0?"（偏空":"（中性")+(cf?"，已突破或跌破確認":"，形成中")+"）")});
+  if(t[0]>=3)add("走勢",1,"連續上漲 "+t[0]+" 日"+(t[0]>=7?"（連漲過久，留意回檔）":""));else if(t[0]<=-3)add("走勢",-1,"連續下跌 "+(-t[0])+" 日"+(t[0]<=-7?"（跌深，可能反彈但不代表止跌）":""));
+  if(t[2]!=null){if(t[2]>5)add("走勢",1,"20日漲幅 "+t[2]+"%");else if(t[2]<-5)add("走勢",-1,"20日跌幅 "+(-t[2])+"%")}
+  const kb=t[3]||"";["長紅","跳空漲"].forEach(f=>{if(kb.includes(f))add("K棒",1,KDEF[f][1])});["長黑","跳空跌"].forEach(f=>{if(kb.includes(f))add("K棒",-1,KDEF[f][1])});if(kb.includes("振幅大"))add("K棒",0,"振幅特別大（多空拉鋸劇烈）")}
+ const ins=INST[c];
+ if(ins&&s[6]>0){const fm=(x,r,a,b,nm)=>{const v=Math.abs(x).toLocaleString(),pc=(Math.abs(r)*100).toFixed(0),dir=x>0?"買超":"賣超";
+   if(Math.abs(r)>=b)add("籌碼",x>0?2:-2,nm+dir+" "+v+" 張（約占成交量 "+pc+"%）");else if(Math.abs(r)>=a)add("籌碼",x>0?1:-1,nm+dir+" "+v+" 張（約占成交量 "+pc+"%）")};
+  fm(ins[2],ins[2]/s[6],.05,.15,"外資");fm(ins[3],ins[3]/s[6],.02,.06,"投信");fm(ins[4],ins[4]/s[6],.05,.15,"自營商")}
+ const bt=s[11],at=s[12];
+ if(bt!=null&&at!=null&&bt+at>0){const r=bt/(bt+at);add("盤中委託",r>=.6?1:r<=.4?-1:0,"最佳五檔委買 "+bt.toLocaleString()+" 張、委賣 "+at.toLocaleString()+" 張（委買占 "+(r*100).toFixed(0)+"%）"+(r>=.6?"，買方掛單較多":r<=.4?"，賣方掛單較多":"，大致均衡")+"；為報價時間的快照，掛單可隨時撤銷")}
+ const e=ETF[c];
+ if(e&&e.pn!=null){const pr=(e.pn-1)*100;if(pr>1)add("ETF",-1,"溢價 "+pr.toFixed(2)+"%（市價高於淨值，追高有折價回歸風險）");else if(pr<-1)add("ETF",1,"折價 "+(-pr).toFixed(2)+"%（市價低於淨值）");else add("ETF",0,"折溢價 "+pr.toFixed(2)+"%（接近淨值）")}
+ if(s[2]==="ETF/ETN"&&/正2|反1|2X|槓桿|反向/.test(s[1]))add("ETF",0,"槓桿或反向型商品，每日再平衡、波動大，不適合長期持有");
+ if(s[2]==="權證"){const w=WARR[c]||[],u=findU(w[1]),put=String(w[0]).includes("售");
+  if(u&&u[0]!==c){const ua=analysis(u[0]);add("權證標的",Math.round((put?-1:1)*ua.pct/25),"標的 "+u[1]+"（"+u[0]+"）綜合傾向 "+(ua.pct>0?"+":"")+ua.pct+"%"+(put?"；認售權證與標的反向計算":""));
+   const K=parseFloat(w[2]);if(K>0){const m=(u[4]/K-1)*100,ot=put?-m:m;if(ot<-10)add("權證風險",-1,"價外 "+(-ot).toFixed(1)+"%（標的價 "+u[4]+"、履約價 "+K+"），到期前需大幅變動才有價值");else if(ot>0)add("權證",0,"價內 "+ot.toFixed(1)+"%")}}
+  const dl=daysLeft(w[3]);if(dl!=null){if(dl<10)add("權證風險",-2,"距最後交易日僅 "+dl+" 天，時間價值快速流失");else if(dl<30)add("權證風險",-1,"距最後交易日 "+dl+" 天，時間價值流失加速")}
+  add("權證風險",0,"權證槓桿高，可能歸零；請另外確認買賣價差與流動性")}
+ const total=items.reduce((p,x)=>p+x.p,0),pct=items.length?clampP(total/10*100):null;
+ return ANM[c]={items:items,total:total,pct:pct,lab:pct==null?"":labelPct(pct)}}
+function techPct(c){const t=TR[c];if(!t)return null;const a=analysis(c);return clampP(a.items.filter(x=>["圖形型態","走勢","K棒"].includes(x.g)).reduce((p,x)=>p+x.p,0)/6*100)}
+function tendPct(c){return analysis(c).pct}
 function badge(p,label){if(p==null)return"—";const a=(0.10+0.35*Math.abs(p)/100).toFixed(2),col=p>0?"214,41,62":p<0?"26,154,82":"130,138,155";
  return "<span class='bd' title='規則式量化傾向，不是買賣建議' style='background:rgba("+col+","+a+")'>"+(label?label+" ":"")+(p>0?"+":"")+p+"%</span>"}
+function anaHtml(c){const a=analysis(c);if(!a.items.length)return"<p class='note'>這個標的目前沒有足夠資料做綜合傾向分析（需要走勢統計、法人、委託或評價資料其中之一）。</p>";
+ const g={};a.items.forEach(x=>{(g[x.g]=g[x.g]||[]).push(x)});
+ return "<div><b>綜合傾向 "+badge(a.pct,a.lab)+"</b> <span class='note'>各項加減分合計 "+(a.total>0?"+":"")+a.total+" 分（10 分約 ±100%）</span>"+Object.keys(g).map(k=>{const sm=g[k].reduce((p,x)=>p+x.p,0);
+  return "<div style='margin-top:4px'><b>"+esc(k)+"</b> <span class='note'>（"+(sm>0?"+":"")+sm+"）</span><ul>"+li(g[k].map(x=>[x.p,x.t]))+"</ul></div>"}).join("")+
+ "<p class='note'>規則式加減分，不是買賣建議；各因素不代表因果。法人資料為最近一個交易日盤後（"+esc((D.inst&&D.inst.date)||"—")+"），委託為報價時間的快照。</p></div>"}
+function warrHtml(c){const w=WARR[c];if(!w)return"";const u=findU(w[1]);
+ return "<p><b>權證資料：</b>類型 "+esc(w[0]||"—")+"｜標的 "+esc(w[1]||"—")+(u?"（"+esc(u[0])+" 現價 "+fx(u[4],2)+"）":"")+"｜履約價 "+esc(w[2]||"—")+"｜最後交易日 "+esc(w[3]||"—")+"（資料日期 "+esc(D.warr_day||"—")+"）</p>"}
+function popClose(){$("pop").style.display="none"}
+function popShow(h){$("popb").innerHTML=h;$("pop").style.display="block"}
+function chipClick(ev,kind,c,name){ev.stopPropagation();popShow(kind==="p"?patPop(c,name):kPop(c,name))}
+function patPop(c,raw){const b=raw.replace(/[(].*$/,""),sg=raw.includes("(多)")?1:raw.includes("(空)")?-1:0,cf=raw.includes("✓"),s=ROWS[c];
+ return "<h3 style='margin:0 0 6px'>"+esc(s[1])+"（"+esc(c)+"）— "+esc(b)+" <span class='chip "+(sg>0?"up":sg<0?"dn":"mid")+"'>"+(sg>0?"偏多":sg<0?"偏空":"中性")+"</span> <span class='note'>"+(cf?"已突破或跌破確認":"形成中，尚未確認")+"</span></h3><p>"+esc(HELPD[b]||"")+"</p><p class='note'>"+
+ (cf?"價格已越過型態的頸線或上下緣，確認程度較高，但仍可能是假突破。":"價格還沒越過頸線或上下緣，形成中的型態可能失敗，不要預設方向。")+"</p>"+svgChart(c)+"<p class='note'>"+esc(D.pattern_tail||"")+"</p>"}
+function kPop(c,f){const s=ROWS[c],t=TR[c]||[],d=KDEF[f]||["mid",f,""],ins=INST[c],bt=s[11],at=s[12],why=[],good=d[0]==="up",bad=d[0]==="dn";
+ const same=(x)=>(good&&x>0)||(bad&&x<0)?"，與K棒方向一致，可能是原因之一":(good||bad)?"，與K棒方向相反，推動力可能來自其他買賣者":"";
+ if(ins&&s[6]>0){if(Math.abs(ins[2]/s[6])>=.05)why.push("外資"+(ins[2]>0?"買超 ":"賣超 ")+Math.abs(ins[2]).toLocaleString()+" 張（約占成交量 "+(Math.abs(ins[2]/s[6])*100).toFixed(0)+"%）"+same(ins[2]));
+  if(Math.abs(ins[3]/s[6])>=.02)why.push("投信"+(ins[3]>0?"買超 ":"賣超 ")+Math.abs(ins[3]).toLocaleString()+" 張"+same(ins[3]))}
+ if(bt!=null&&at!=null&&bt+at>0){const r=bt/(bt+at);if(r>=.6||r<=.4)why.push("最佳五檔委買 "+bt.toLocaleString()+"、委賣 "+at.toLocaleString()+" 張（委買占 "+(r*100).toFixed(0)+"%），"+(r>=.6?"買方掛單較多":"賣方掛單較多")+same(r>=.6?1:-1)+"；為報價時間的快照，掛單可撤銷")}
+ (t[5]||[]).filter(x=>x.includes("✓")).forEach(x=>why.push("同時出現已確認型態："+x));
+ if(!why.length)why.push("目前資料中看不到明確的法人或委託面支持；也可能來自個別消息、族群輪動或散戶追價與停損，可再查相關新聞");
+ return "<h3 style='margin:0 0 6px'>"+esc(s[1])+"（"+esc(c)+"）— "+esc(d[1])+"</h3><p>"+esc(d[2])+"</p><p><b>這檔標的資料：</b>現價 "+fx(s[4],2)+"，漲跌 "+(s[5]>0?"+":"")+s[5]+"%｜連續 "+(t[0]==null?"—":t[0])+" 日｜5日 "+(t[1]==null?"—":t[1])+"%、20日 "+(t[2]==null?"—":t[2])+"%｜最新K棒實體 "+(t[4]==null?"—":t[4])+"%</p>"+
+ "<p><b>可能原因（參考，不代表因果）：</b></p><ul>"+why.map(w=>"<li>"+esc(w)+"</li>").join("")+"</ul><p class='note'>法人資料為 "+esc((D.inst&&D.inst.date)||"—")+" 盤後；委買委賣為報價時間快照，歷史K棒無法回溯。</p>"}
+function patChips(c){const t=TR[c];if(!t||!t[5]||!t[5].length)return"—";return t[5].map(x=>"<span class='chip "+(x.includes("(多)")?"up":x.includes("(空)")?"dn":"mid")+"' data-k='p' data-c='"+esc(c)+"' data-n='"+esc(x)+"' onclick='chipClick(event,this.dataset.k,this.dataset.c,this.dataset.n)'>"+esc(x)+"</span>").join("")}
+function kChips(c){const t=TR[c];if(!t||!t[3])return"—";return t[3].split("、").map(f=>{const d=KDEF[f];return "<span class='chip "+(d?d[0]:"mid")+"' data-k='k' data-c='"+esc(c)+"' data-n='"+esc(f)+"' onclick='chipClick(event,this.dataset.k,this.dataset.c,this.dataset.n)'>"+esc(f)+"</span>"}).join("")}
+const nz=(x,f)=>x==null?"—":f(x);
+const num0=v=>v==null?"—":"<span class='"+(v>0?"up":v<0?"dn":"")+"'>"+(v>0?"+":"")+v.toLocaleString()+"</span>";
 const TRv=(c,i)=>TR[c]?TR[c][i]:null;
+const brv=s=>(s[11]!=null&&s[12]!=null&&s[11]+s[12]>0)?Math.round(s[11]/(s[11]+s[12])*100):null;
 const COLS=[
  {k:"code",l:"代號",v:s=>s[0],s:1,r:(s,c)=>"<a href='https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID="+c+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+c+"</a>"},
  {k:"name",l:"名稱",v:s=>s[1],s:1,r:s=>esc(s[1])},
  {k:"px",l:"現價",v:s=>s[4],r:s=>fx(s[4],2)},
  {k:"pct",l:"漲跌%",v:s=>s[5],r:s=>"<span class='"+(s[5]>0?"up":s[5]<0?"dn":"")+"'>"+(s[5]>0?"+":"")+s[5].toFixed(2)+"</span>"},
  {k:"vol",l:"量(張)",v:s=>s[6],r:s=>s[6].toLocaleString()},
- {k:"tend",l:"綜合傾向",v:s=>tendPct(s[0]),r:s=>badge(tendPct(s[0]),SC[s[0]]?SC[s[0]].ov:"")},
+ {k:"tend",l:"綜合傾向",v:s=>tendPct(s[0]),r:s=>{const a=analysis(s[0]);return badge(a.pct,a.lab)}},
  {k:"tech",l:"技術傾向",v:s=>techPct(s[0]),r:s=>badge(techPct(s[0]))},
+ {k:"br",l:"委買比%",v:s=>brv(s),r:s=>{const b=brv(s);return b==null?"—":"<span class='"+(b>=60?"up":b<=40?"dn":"")+"'>"+b+"%</span>"}},
+ {k:"fi",l:"外資(張)",v:s=>INST[s[0]]?INST[s[0]][2]:null,r:s=>num0(INST[s[0]]?INST[s[0]][2]:null)},
+ {k:"it",l:"投信(張)",v:s=>INST[s[0]]?INST[s[0]][3]:null,r:s=>num0(INST[s[0]]?INST[s[0]][3]:null)},
  {k:"stk",l:"連續",v:s=>TRv(s[0],0),r:s=>{const t=TR[s[0]];return t?(t[0]>0?"<span class='up'>▲"+t[0]+"</span>":t[0]<0?"<span class='dn'>▼"+(-t[0])+"</span>":"—"):"—"}},
  {k:"c5",l:"5日%",v:s=>TRv(s[0],1),r:s=>pcs(TRv(s[0],1))},
  {k:"c20",l:"20日%",v:s=>TRv(s[0],2),r:s=>pcs(TRv(s[0],2))},
- {k:"kb",l:"K棒警示",v:s=>TRv(s[0],3)||null,s:1,r:s=>{const t=TR[s[0]];return t&&t[3]?esc(t[3]):"—"}},
- {k:"pat",l:"圖形型態",v:s=>{const t=TR[s[0]];return t&&t[5]&&t[5].length?t[5].join("、"):null},s:1,r:s=>{const t=TR[s[0]];return t&&t[5]&&t[5].length?esc(t[5].join("、")):"—"}},
+ {k:"kb",l:"K棒警示",v:s=>TRv(s[0],3)||null,s:1,r:s=>kChips(s[0])},
+ {k:"pat",l:"圖形型態",v:s=>{const t=TR[s[0]];return t&&t[5]&&t[5].length?t[5].join("、"):null},s:1,r:s=>patChips(s[0])},
  {k:"pe",l:"本益比",v:s=>s[7],r:s=>fe(s,s[7],1)},
  {k:"yld",l:"殖利率%",v:s=>s[8],r:s=>fe(s,s[8],2)},
  {k:"pb",l:"淨值比",v:s=>s[9],r:s=>fe(s,s[9],2)},
  {k:"fs",l:"基本面",v:s=>SC[s[0]]?SC[s[0]].fs:null,r:s=>SC[s[0]]?SC[s[0]].fs:na(s)},
  {k:"ts",l:"技術面",v:s=>SC[s[0]]?SC[s[0]].ts:null,r:s=>SC[s[0]]?SC[s[0]].ts:na(s)},
  {k:"ns",l:"消息",v:s=>SC[s[0]]?SC[s[0]].ns:null,r:s=>SC[s[0]]?SC[s[0]].ns:na(s)},
- {k:"tot",l:"總分",v:s=>SC[s[0]]?SC[s[0]].tot:null,r:s=>SC[s[0]]?"<b>"+SC[s[0]].tot+"</b>":na(s)},
+ {k:"tot",l:"評價總分",v:s=>SC[s[0]]?SC[s[0]].tot:null,r:s=>SC[s[0]]?"<b>"+SC[s[0]].tot+"</b>":na(s)},
  {k:"ind",l:"產業",v:ind,s:1,r:s=>esc(ind(s))},
  {k:"kind",l:"類別",v:s=>s[2],s:1,r:s=>s[2]},
- {k:"mkt",l:"市場",v:s=>s[3],s:1,r:s=>s[3]}];
+ {k:"mkt",l:"市場",v:s=>s[3],s:1,r:s=>s[3]},
+ {k:"bt",l:"委買(張)",v:s=>s[11],r:s=>s[11]==null?"—":s[11].toLocaleString()},
+ {k:"at",l:"委賣(張)",v:s=>s[12],r:s=>s[12]==null?"—":s[12].toLocaleString()},
+ {k:"dl",l:"自營(張)",v:s=>INST[s[0]]?INST[s[0]][4]:null,r:s=>num0(INST[s[0]]?INST[s[0]][4]:null)},
+ {k:"tot3",l:"三大法人(張)",v:s=>INST[s[0]]?INST[s[0]][5]:null,r:s=>num0(INST[s[0]]?INST[s[0]][5]:null)}];
 $("colbox").innerHTML=COLS.map(c=>"<label><input type='checkbox' class='col' value='"+c.k+"'"+(HID.has(c.k)?"":" checked")+" onchange='setCols()'>"+c.l+"</label>").join("");
-function setCols(){HID=new Set([...document.querySelectorAll(".col")].filter(x=>!x.checked).map(x=>x.value));try{localStorage.setItem("uni_hid",JSON.stringify([...HID]))}catch(e){}render()}
-function colPreset(m){const keep=new Set(["code","name","px","pct","vol","tend","tech","stk","pat"]);
+function setCols(){HID=new Set([...document.querySelectorAll(".col")].filter(x=>!x.checked).map(x=>x.value));try{localStorage.setItem("uni_hid2",JSON.stringify([...HID]))}catch(e){}render()}
+function colPreset(m){const keep=new Set(["code","name","px","pct","vol","tend","tech","br","fi","it","stk","pat","kb"]);
  document.querySelectorAll(".col").forEach(x=>{x.checked=(m==="full")||keep.has(x.value)});setCols()}
 function sortCol(k){if(SORTC.k!==k)SORTC={k:k,d:1};else if(SORTC.d===1)SORTC={k:k,d:-1};else SORTC={k:null,d:1};render()}
 function render(){
@@ -450,10 +573,16 @@ def main():
     stocks = (safe("上市收盤價/ETF(證交所STOCK_DAY_ALL)", listed) or []) + (safe("上櫃收盤價(櫃買OpenAPI)", otc) or [])
     if not stocks:
         raise SystemExit("上市與上櫃資料都抓不到，請看上方錯誤訊息")
-    rt = safe("證交所即時報價（個股，盤中疊加）", realtime_overlay, stocks)
     imap = {**(safe("櫃買產業別(t187ap03_O)", industries_otc) or {}), **(safe("證交所產業別(t187ap03_L)", industries) or {})}
     for r in stocks:
         r.append("ETF/ETN" if r[2] == "ETF/ETN" else "存託憑證" if r[2] == "TDR" else imap.get(r[0], "未分類"))
+        r += [None, None]          # 第 11、12 欄：最佳五檔委買總量、委賣總量（張，即時報價有覆蓋才有值）
+    rt = safe("證交所即時報價（個股，盤中疊加，含最佳五檔）", realtime_overlay, stocks)
+    wr = None if a.no_warrants else safe("權證收盤行情(MI_INDEX type=0999)", warrant_rows)
+    warr, warr_day = {}, ""
+    if wr:
+        stocks += wr[0]
+        warr, warr_day = wr[1], wr[2]
     inst = safe("證交所三大法人個股買賣超(T86)", institutional_by_stock)
     war = [] if a.no_warrants else (safe("上市權證基本資料(t187ap37_L)", warrants) or [])
     app = safe("申請上市公司(applylistingLocal)", applying)
@@ -471,13 +600,13 @@ def main():
                 r[9] = round(r[4] / e["nav"], 3)
     STATUS.append(("深入評價快取(cache/scores.json)", bool(scores), f"{len(scores)} 檔" if scores else "尚無快取或讀取失敗"))
     STATUS.append(("走勢統計快取(cache/trends.json)", bool(trends), f"{len(trends)} 檔" if trends else "尚無快取或讀取失敗"))
-    order = ["股票", "ETF/ETN", "特別股", "TDR", "其他"]
+    order = ["股票", "ETF/ETN", "特別股", "TDR", "權證", "其他"]
     kinds = sorted({s[2] for s in stocks}, key=lambda k: order.index(k) if k in order else 9)
     kh = "".join(f'<label><input type="checkbox" class="k" value="{k}" {"checked" if k in ("股票", "ETF/ETN") else ""} onchange="render()"> {k}</label>' for k in kinds)
     st = "".join(f'<tr><td>{html.escape(n)}</td><td>{"成功" if ok else "失敗"}</td><td>{html.escape(m)}</td></tr>' for n, ok, m in STATUS)
     data = json.dumps({"stocks": stocks, "warrants": war, "apply": app, "scores": scores, "scored_at": scored_at,
                        "trends": trends, "trends_at": trends_at, "inst": inst,
-                       "series": tj.get("series", {}), "etf": etf,
+                       "series": tj.get("series", {}), "etf": etf, "warr": warr, "warr_day": warr_day,
                        "trends_asof": tj.get("asof", ""), "trends_stale": bool(tj.get("asof")) and tj.get("asof") < expected_last_day().isoformat(), "help": {k: v for k, v in HELP.items()}, "pattern_tail": TAIL}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     src = f"證交所即時（{rt[1]}，覆蓋 {rt[0]}/{rt[2]} 檔，其餘為最近收盤）" if rt else "最近一個交易日的收盤價（即時報價抓不到或非開盤時段）"
     page = (PAGE.replace("__DATA__", data).replace("__KINDS__", kh).replace("__STATUS__", st)

@@ -18,6 +18,8 @@
 import argparse
 import datetime as dt
 import html
+import json
+import textwrap
 import re
 import time
 import webbrowser
@@ -38,6 +40,7 @@ UA = {"User-Agent": "Mozilla/5.0 (compatible; TaiexAnalyzer/1.0)"}
 UP, DN = "#d6293e", "#1a9a52"          # 台股習慣：紅漲綠跌
 MA_COLORS = ["#e0a800", "#2b6cb0", "#9b59b6", "#e67e22"]
 OUT_FILE = Path(__file__).with_name("taiex_report.html")
+CACHE_DIR = Path(__file__).with_name("cache")
 
 MARKETS = {  # 名稱: Yahoo 代號
     "S&P500": "^GSPC", "道瓊": "^DJI", "那斯達克": "^IXIC", "費城半導體": "^SOX",
@@ -173,9 +176,9 @@ def taifex():
     return out
 
 
-def news(query, n=6):
+def news(query, n=6, when=True):
     r = requests.get("https://news.google.com/rss/search",
-                     params={"q": query + " when:2d", "hl": "zh-TW", "gl": "TW", "ceid": "TW:zh-Hant"},
+                     params={"q": query + (" when:2d" if when else ""), "hl": "zh-TW", "gl": "TW", "ceid": "TW:zh-Hant"},
                      headers=UA, timeout=12)
     items = []
     for it in ET.fromstring(r.content).iter("item"):
@@ -341,7 +344,7 @@ gd.fitRange=fit;})();
 MA_ALL = ["#e0a800", "#2b6cb0", "#9b59b6", "#e67e22", "#16a085", "#7f8c8d"]
 
 
-def chart(df, title, mas, names, show, daily=False, first=False, overlays=None, visible=None, buttons=None, intraday=False):
+def chart(df, title, mas, names, show, daily=False, first=False, overlays=None, visible=None, buttons=None, intraday=False, marks=None):
     """K 線圖：預設顯示最近 show 根，但保留全部歷史，可用上方按鈕、下方滑桿、拖曳縮放調整時間範圍；
     Y 軸會隨可見範圍自動縮放；圖例點一下可顯示或隱藏均線。"""
     d = df.copy()
@@ -362,6 +365,10 @@ def chart(df, title, mas, names, show, daily=False, first=False, overlays=None, 
             xs = [df.index[min(max(i, 0), len(df) - 1)] for i, _ in ln["pts"]]
             fig.add_trace(go.Scatter(x=xs, y=[y for _, y in ln["pts"]], mode="lines", name=f'{pt["name"]}·{ln["label"]}',
                                      line=dict(width=2, dash="dash", color="#8e44ad")), 1, 1)
+    if marks:
+        fig.add_trace(go.Scatter(x=[m["date"] for m in marks], y=[m["y"] for m in marks], mode="markers", name="特別長K棒說明",
+                                 marker=dict(symbol="diamond", size=11, color=[m["color"] for m in marks], line=dict(width=1, color="#333")),
+                                 text=[m["text"] for m in marks], hovertemplate="%{text}<extra>特別長K棒</extra>"), 1, 1)
     vis = d.tail(show)
     lo, hi = float(vis["Low"].min()), float(vis["High"].max())
     pad = (hi - lo) * 0.05 or 1.0
@@ -498,6 +505,106 @@ def fill_from_5m(df, d5):
         return df, 0
     ext = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"]).set_index("Date")
     return pd.concat([df, ext]).sort_index(), len(ext)
+
+
+def inst_history(dates):
+    """逐日三大法人買賣超（億元）：證交所 BFI82U，結果快取在 cache/inst_hist.json，只補抓缺的日期。"""
+    path = CACHE_DIR / "inst_hist.json"
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa
+        cache = {}
+    today = dt.date.today()
+    miss = [d for d in dates if d.isoformat() not in cache][-45:]
+    fails = 0
+    for d in miss:
+        try:
+            j = requests.get("https://www.twse.com.tw/rwd/zh/fund/BFI82U",
+                             params={"date": d.strftime("%Y%m%d"), "type": "day", "response": "json"}, headers=UA, timeout=12).json()
+            if j.get("stat") == "OK" and j.get("data"):
+                rec = {}
+                for row in j["data"]:
+                    nm, v = row[0], num(row[3])
+                    if v is None:
+                        continue
+                    v /= 1e8
+                    if nm.startswith("外資及陸資") and "fi" not in rec:
+                        rec["fi"] = round(v, 1)
+                    elif nm.startswith("投信"):
+                        rec["it"] = round(v, 1)
+                    elif nm.startswith("合計"):
+                        rec["tot"] = round(v, 1)
+                cache[d.isoformat()] = rec
+            elif d < today:
+                cache[d.isoformat()] = {}     # 該日沒有資料（假日等），不再重抓
+            fails = 0
+        except Exception:  # noqa
+            fails += 1
+            if fails >= 3:
+                break
+        time.sleep(0.3)
+    try:
+        CACHE_DIR.mkdir(exist_ok=True)
+        path.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    except OSError:
+        pass
+    return {k: v for k, v in cache.items() if v}
+
+
+def news_on(day, n=3):
+    """某一天的台股相關新聞標題（Google News 的 after:／before: 日期條件）。"""
+    d1 = day + dt.timedelta(days=1)
+    return news(f"台股 大盤 after:{day.isoformat()} before:{d1.isoformat()}", n, when=False)
+
+
+def long_bars(df, inst, top=6, back=60, with_news=True):
+    """找出最近 back 根日K中特別長的K棒（長紅、長黑、振幅特別大、跳空），並整理可能的原因。"""
+    d = df.tail(back + 25).copy()
+    body, rng = (d["Close"] - d["Open"]).abs(), d["High"] - d["Low"]
+    ab, ar = body.shift().rolling(20).mean(), rng.shift().rolling(20).mean()
+    av = d["Volume"].shift().rolling(20).mean()
+    ma20, ma60 = d["Close"].rolling(20).mean(), d["Close"].rolling(60).mean()
+    out = []
+    for i in range(max(len(d) - back, 21), len(d)):
+        r, pv = d.iloc[i], d.iloc[i - 1]
+        flags = []
+        if ab.iloc[i] > 0 and body.iloc[i] >= 2 * ab.iloc[i] and body.iloc[i] >= 0.6 * rng.iloc[i]:
+            flags.append("長紅" if r["Close"] > r["Open"] else "長黑")
+        if ar.iloc[i] > 0 and rng.iloc[i] >= 2 * ar.iloc[i]:
+            flags.append("振幅大")
+        if r["Low"] > pv["High"]:
+            flags.append("跳空漲")
+        elif r["High"] < pv["Low"]:
+            flags.append("跳空跌")
+        if not flags:
+            continue
+        day = d.index[i].date()
+        pct = (r["Close"] / pv["Close"] - 1) * 100
+        dirn = 1 if r["Close"] > r["Open"] else -1 if r["Close"] < r["Open"] else 0
+        L = [f"開 {r['Open']:,.0f}／高 {r['High']:,.0f}／低 {r['Low']:,.0f}／收 {r['Close']:,.0f}，漲跌 {pct:+.2f}%；實體為近20日平均的 {body.iloc[i] / ab.iloc[i]:.1f} 倍、振幅 {rng.iloc[i] / ar.iloc[i]:.1f} 倍"]
+        if av.iloc[i] > 0 and r["Volume"] > 0:
+            q = r["Volume"] / av.iloc[i]
+            L.append(f"成交量為20日均量的 {q:.1f} 倍（{'明顯放量，資金關注度高' if q >= 1.5 else '量縮，追價意願有限' if q <= 0.7 else '量能一般'}）")
+        for nm, ma in (("月線(MA20)", ma20), ("季線(MA60)", ma60)):
+            if pd.notna(ma.iloc[i - 1]) and pd.notna(ma.iloc[i]):
+                if pv["Close"] < ma.iloc[i - 1] and r["Close"] > ma.iloc[i]:
+                    L.append(f"收盤由下往上站上{nm}（{ma.iloc[i]:,.0f}），可能引發技術面買盤")
+                elif pv["Close"] > ma.iloc[i - 1] and r["Close"] < ma.iloc[i]:
+                    L.append(f"收盤由上往下跌破{nm}（{ma.iloc[i]:,.0f}），可能引發停損或技術面賣壓")
+        if "跳空漲" in flags:
+            L.append("向上跳空：開盤前利多或隔夜國際市場走強，缺口是否被回補是後續關鍵")
+        if "跳空跌" in flags:
+            L.append("向下跳空：開盤前利空或隔夜國際市場走弱，缺口是否被回補是後續關鍵")
+        ih = inst.get(day.isoformat()) if inst else None
+        if ih and "tot" in ih:
+            same = "與K棒方向一致，可能是原因之一" if (dirn > 0 and ih["tot"] > 0) or (dirn < 0 and ih["tot"] < 0) else "與K棒方向相反，推動力可能來自其他買賣者" if dirn else ""
+            L.append(f"三大法人：外資 {ih.get('fi', 0):+.1f} 億、投信 {ih.get('it', 0):+.1f} 億、合計 {ih['tot']:+.1f} 億（{same}）")
+        out.append({"date": day, "dir": dirn, "flags": flags, "pct": pct, "high": float(r["High"]), "lines": L, "news": []})
+    out = out[-top:]
+    if with_news:
+        for b in out:
+            b["news"] = safe(f"當日新聞 {b['date']}", news_on, b["date"]) or []
+    return out
 
 
 def twse_fill(df):
@@ -674,13 +781,20 @@ def build(refresh=0):
         p.append(pred_card(pdat, w, entry, weighted, now, pc, today_s in cur["time"].replace("-", ""), tot))
     p.append('<div class="card"><h2>K 線圖（可調整時間範圍）</h2>')
     p.append(RANGE_HTML)
+    ih = safe("三大法人歷史(逐日BFI82U，快取)", inst_history, [x.date() for x in df.index[-45:]])
+    LB = long_bars(df, ih or {})
+    marks = []
+    for b in LB:
+        txt = "<br>".join(["<b>" + str(b["date"]) + " " + "、".join(b["flags"]) + "</b>"] + [x for ln in b["lines"] for x in textwrap.wrap(ln, 34)] +
+                          [x for t in b["news"][:2] for x in textwrap.wrap("新聞：" + t["title"], 34)] + ["委買委賣為盤中即時資料，歷史K棒無法回溯"])
+        marks.append({"date": pd.Timestamp(b["date"]), "y": b["high"] * 1.012, "color": UP if b["dir"] > 0 else DN if b["dir"] < 0 else "#8a92a3", "text": txt})
     first = True
     if d5 is not None and len(d5) > 10:
         p.append(chart(d5, "當日走勢（5 分鐘K；MA12＝1 小時、MA48＝4 小時；按鈕可看當日／2日／5日）", [12, 48], ["MA12(1小時)", "MA48(4小時)"],
                        min(len(d5), 60), first=first, buttons=[(1, "day", "當日"), (2, "day", "2日")], intraday=True))
         first = False
     p.append(chart(df, "日K（週線MA5／月線MA20／季線MA60／半年線MA120／年線MA240）", [5, 10, 20, 60, 120, 240],
-                   ["週線MA5", "MA10", "月線MA20", "季線MA60", "半年線MA120", "年線MA240"], 250, True, first, PT,
+                   ["週線MA5", "MA10", "月線MA20", "季線MA60", "半年線MA120", "年線MA240"], 250, True, first, PT, marks=marks,
                    visible=["週線MA5", "月線MA20", "季線MA60", "年線MA240"],
                    buttons=[(5, "day", "5日"), (1, "month", "1個月"), (3, "month", "3個月"), (6, "month", "6個月"), (1, "year", "1年"), (3, "year", "3年")]))
     p.append(chart(resample(df, "W-FRI"), "週K", [5, 13, 26, 52], ["MA5週", "MA13週(季)", "MA26週(半年)", "MA52週(年)"], 156,
@@ -688,6 +802,16 @@ def build(refresh=0):
     p.append(chart(resample(df, "ME"), "月K", [3, 6, 12, 24], ["MA3月", "MA6月", "MA12月(年)", "MA24月"], 120,
                    buttons=[(1, "year", "1年"), (3, "year", "3年"), (5, "year", "5年")]))
     p.append("</div>")
+    if LB:
+        items = ""
+        for b in LB[::-1]:
+            col = "up" if b["dir"] > 0 else "dn" if b["dir"] < 0 else ""
+            news_h = "".join(f'<li class="note">當日新聞：<a href="{html.escape(t["link"])}" target="_blank" rel="noopener">{html.escape(t["title"])}</a></li>' for t in b["news"][:3])
+            items += (f'<li><b class="{col}">{b["date"]} {"、".join(b["flags"])}（{b["pct"]:+.2f}%）</b><ul>'
+                      + "".join(f"<li>{html.escape(x)}</li>" for x in b["lines"]) + news_h + "</ul></li>")
+        p.append(f'<div class="card"><h2>特別長的K棒說明（日K圖上的菱形標記，滑鼠移上去也看得到）</h2><ul>{items}</ul>'
+                 '<p class="note">原因是依當日價量、均線位置、跳空、三大法人買賣超與當日新聞標題整理的「可能原因」，不代表因果。'
+                 '委買委賣、台指期等為盤中即時資料，歷史K棒無法回溯；盤中請看個股篩選頁或 live_server.py 的即時五檔。</p></div>')
     p.append(f'<div class="card"><h2>K棒型態分析（日K，看最近 1～3 根）</h2><ul>{li(K)}</ul><p class="note">型態需搭配所處位置與量能判讀，單一型態可靠度有限；K棒型態分數最多計 ±3 分。</p></div>')
     if PT:
         cards = "".join(f'<li><b class="{cls(q["bias"])}">{html.escape(q["name"])}（{"偏多" if q["bias"] > 0 else "偏空" if q["bias"] < 0 else "中性"}'
