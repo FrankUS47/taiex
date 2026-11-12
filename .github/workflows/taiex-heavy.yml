@@ -1,0 +1,88 @@
+# 放在儲存庫的 .github/workflows/taiex-heavy.yml（新檔）
+# 耗時的資料更新：個股深入評價、走勢統計（連漲連跌、K 棒、圖形型態）、ETF 資料。
+# 只更新快取，不發佈網站；網站由 taiex-report.yml（輕量版）每 10 分鐘發佈並讀取這些快取。
+name: taiex-heavy
+
+on:
+  schedule:
+    - cron: "40 0 * * 1-5"      # 台灣時間 08:40：評價、走勢、ETF 全部更新
+    - cron: "*/30 1-5 * * 1-5"  # 台灣時間 09:00～13:59，每 30 分鐘更新走勢統計（含當日最新價）
+    - cron: "30 8 * * 1-5"      # 台灣時間 16:30：收盤後全部更新
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heavy
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Taipei
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: v1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: v1/requirements.txt
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 還原快取（評價、走勢、ETF）
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            v1/cache/scores.json
+            v1/cache/trends.json
+            v1/cache/etf.json
+          key: heavy-none
+          restore-keys: heavy-
+
+      # 快取要沿用多久（小時）：08:40、16:30 → 評價 3、走勢 1、ETF 6；盤中 30 分鐘 → 只更新走勢；手動或推送 → 評價 6、走勢 2、ETF 12
+      - name: 決定快取重用時數
+        id: ttl
+        run: |
+          S='${{ github.event.schedule }}'
+          case "$S" in
+            "40 0 * * 1-5"|"30 8 * * 1-5") echo "scores=3" >> "$GITHUB_OUTPUT"; echo "trends=1" >> "$GITHUB_OUTPUT"; echo "etf=6" >> "$GITHUB_OUTPUT" ;;
+            "*/30 1-5 * * 1-5")            echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=0.4" >> "$GITHUB_OUTPUT"; echo "etf=9999" >> "$GITHUB_OUTPUT" ;;
+            *)                             echo "scores=6" >> "$GITHUB_OUTPUT"; echo "trends=2" >> "$GITHUB_OUTPUT"; echo "etf=12" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: 走勢統計（連續漲跌日數、K 棒警示、圖形型態）
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python stock_trends.py --reuse-hours ${{ steps.ttl.outputs.trends }} --max-minutes 18
+
+      - name: ETF 資料（淨值、折溢價、殖利率）
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python etf_info.py --reuse-hours ${{ steps.ttl.outputs.etf }}
+
+      - name: 預先計算個股深入評價（約 200 檔）
+        continue-on-error: true
+        timeout-minutes: 30
+        run: python stock_scores.py --reuse-hours ${{ steps.ttl.outputs.scores }}
+
+      - name: 儲存快取（評價、走勢、ETF）
+        if: always() && hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            v1/cache/scores.json
+            v1/cache/trends.json
+            v1/cache/etf.json
+          key: heavy-${{ hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json') }}
