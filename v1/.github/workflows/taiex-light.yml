@@ -70,13 +70,17 @@ jobs:
         id: market
         continue-on-error: true
         timeout-minutes: 10
-        run: python taiex_analyzer.py --no-open --refresh 300
+        run: |
+          set -o pipefail
+          python taiex_analyzer.py --no-open --refresh 300 2>&1 | tee market.log
 
       - name: 全市場篩選與評價頁
         id: uni
         continue-on-error: true
         timeout-minutes: 10
-        run: python stock_universe.py --no-open
+        run: |
+          set -o pipefail
+          python stock_universe.py --no-open 2>&1 | tee universe.log
 
       - name: 儲存快取（預測與法人歷史）
         if: always() && hashFiles('v1/cache/predictions.json', 'v1/cache/inst_hist.json') != ''
@@ -97,13 +101,14 @@ jobs:
           mkdir -p site
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
           V=$(date +%s)
-          page() {  # $1 檔名 $2 步驟結果 $3 標題
+          page() {  # $1 檔名 $2 步驟結果 $3 標題 $4 記錄檔
             if [ "$2" = "success" ] && [ -f "$1" ]; then cp "$1" "site/$1"; else
-              printf '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title></head><body style="font:16px system-ui,sans-serif;padding:16px"><h2>%s</h2><p style="color:#b45309">⚠ 這次（%s）產生失敗，請到 GitHub 的 Actions 頁面查看這次執行的錯誤訊息。</p><p><a href="index.html">回首頁</a></p></body></html>' "$3" "$3" "$NOW" > "site/$1"
+              LOG=$(tail -n 30 "$4" 2>/dev/null | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+              printf '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title></head><body style="font:16px system-ui,sans-serif;padding:16px"><h2>%s</h2><p style="color:#b45309">⚠ 這次（%s）產生失敗。最後的執行記錄如下，把它貼給我就能判斷原因：</p><pre style="white-space:pre-wrap;font-size:12px;background:#f6f7f9;color:#1d2330;padding:8px;border-radius:6px">%s</pre><p><a href="index.html">回首頁</a></p></body></html>' "$3" "$3" "$NOW" "$LOG" > "site/$1"
             fi
           }
-          page taiex_report.html "$M_OK" "大盤分析"
-          page universe.html "$U_OK" "全市場篩選與評價"
+          page taiex_report.html "$M_OK" "大盤分析" market.log
+          page universe.html "$U_OK" "全市場篩選與評價" universe.log
           {
             echo '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>台股報告</title></head><body style="font:16px system-ui,sans-serif;padding:16px;line-height:1.9">'
             echo "<h1>台股報告</h1><p>網站組合時間：$NOW（台灣時間）｜排程快照，非逐筆即時</p>"
