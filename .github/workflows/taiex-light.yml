@@ -151,10 +151,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          WF=$(basename "${GITHUB_WORKFLOW_REF%%@*}")   # 這個 workflow 自己的檔名，檔名取什麼都能接力
           sleep 360
           D=$(date +%u); T=$((10#$(date +%H) * 60 + 10#$(date +%M))); go=0
           # 台灣時間：週一到週五 08:30～14:00、17:30～23:59；週二到週六 00:00～05:45（美股時段）
           if [ "$D" -le 5 ] && [ "$T" -ge 510 ] && [ "$T" -le 840 ]; then go=1; fi
           if [ "$D" -le 5 ] && [ "$T" -ge 1050 ]; then go=1; fi
           if [ "$D" -ge 2 ] && [ "$D" -le 6 ] && [ "$T" -le 345 ]; then go=1; fi
-          if [ "$go" = "1" ]; then gh workflow run taiex-report.yml --ref "${{ github.ref_name }}"; else echo "目前不在接力時段，等 cron 重新啟動"; fi
+          if [ "$go" = "1" ]; then gh workflow run "$WF" --ref "$GITHUB_REF_NAME"; else echo "目前不在接力時段，等 cron 重新啟動"; fi

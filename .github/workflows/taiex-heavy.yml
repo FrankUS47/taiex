@@ -116,6 +116,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          WF=$(basename "${GITHUB_WORKFLOW_REF%%@*}")   # 這個 workflow 自己的檔名，檔名取什麼都能接力
           sleep 300
           D=$(date +%u); T=$((10#$(date +%H) * 60 + 10#$(date +%M)))
-          if [ "$D" -le 5 ] && [ "$T" -ge 510 ] && [ "$T" -le 1050 ]; then gh workflow run taiex-heavy.yml --ref "${{ github.ref_name }}"; else echo "目前不在接力時段，等 cron 重新啟動"; fi
+          if [ "$D" -le 5 ] && [ "$T" -ge 510 ] && [ "$T" -le 1050 ]; then gh workflow run "$WF" --ref "$GITHUB_REF_NAME"; else echo "目前不在接力時段，等 cron 重新啟動"; fi
