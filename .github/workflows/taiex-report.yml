@@ -55,7 +55,7 @@ jobs:
           key: state-none
           restore-keys: state-
 
-      # 個股評價、走勢統計、ETF（由 taiex-heavy.yml 更新，這裡只讀取）
+      # 個股評價、走勢統計、ETF、回測模型（由 taiex-heavy.yml 更新，這裡只讀取）
       - name: 還原快取（評價、走勢、ETF）
         uses: actions/cache/restore@v4
         with:
@@ -63,6 +63,7 @@ jobs:
             v1/cache/scores.json
             v1/cache/trends.json
             v1/cache/etf.json
+            v1/cache/model.json
           key: heavy-none
           restore-keys: heavy-
 
@@ -133,3 +134,28 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # 接力：GitHub 的 cron 排程常常延遲或漏掉，所以每一輪結束後自己再觸發下一輪（只在看盤與海外市場的時段）。
+  # 排程（cron）仍保留，用來在每個時段開始時重新啟動接力。
+  next:
+    needs: [build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: 等待後再次觸發下一輪
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          WF=$(basename "${GITHUB_WORKFLOW_REF%%@*}")   # 這個 workflow 自己的檔名，檔名取什麼都能接力
+          sleep 360
+          D=$(date +%u); T=$((10#$(date +%H) * 60 + 10#$(date +%M))); go=0
+          # 台灣時間：週一到週五 08:30～14:00、17:30～23:59；週二到週六 00:00～05:45（美股時段）
+          if [ "$D" -le 5 ] && [ "$T" -ge 510 ] && [ "$T" -le 840 ]; then go=1; fi
+          if [ "$D" -le 5 ] && [ "$T" -ge 1050 ]; then go=1; fi
+          if [ "$D" -ge 2 ] && [ "$D" -le 6 ] && [ "$T" -le 345 ]; then go=1; fi
+          if [ "$go" = "1" ]; then gh workflow run "$WF" --ref "$GITHUB_REF_NAME"; else echo "目前不在接力時段，等 cron 重新啟動"; fi
