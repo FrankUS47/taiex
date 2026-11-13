@@ -1,14 +1,19 @@
-# 放在儲存庫的 .github/workflows/taiex-heavy.yml（新檔）
-# 耗時的資料更新：個股深入評價、走勢統計（連漲連跌、K 棒、圖形型態）、ETF 資料。
-# 只更新快取，不發佈網站；網站由 taiex-report.yml（輕量版）每 10 分鐘發佈並讀取這些快取。
+# 放在儲存庫的 .github/workflows/taiex-heavy.yml（覆蓋舊內容）
+# 耗時的資料更新：走步驗證回測模型、個股深入評價、走勢統計（連漲連跌、K 棒、圖形型態）、ETF 資料。
+# 只更新快取，不發佈網站；網站由 taiex-report.yml（輕量版）發佈並讀取這些快取。
 name: taiex-heavy
 
 on:
   schedule:
-    - cron: "40 0 * * 1-5"      # 台灣時間 08:40：評價、走勢、ETF 全部更新
+    - cron: "40 0 * * 1-5"      # 台灣時間 08:40：全部更新
     - cron: "*/30 1-5 * * 1-5"  # 台灣時間 09:00～13:59，每 30 分鐘更新走勢統計（含當日最新價）
     - cron: "30 8 * * 1-5"      # 台灣時間 16:30：收盤後全部更新
   workflow_dispatch:
+    inputs:
+      force:
+        description: "強制全部重算（忽略快取，約需 20～40 分鐘）"
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -25,7 +30,7 @@ env:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: v1
@@ -41,26 +46,34 @@ jobs:
       - name: 安裝套件
         run: pip install -r requirements.txt
 
-      - name: 還原快取（評價、走勢、ETF）
+      - name: 還原快取（評價、走勢、ETF、回測模型）
         uses: actions/cache/restore@v4
         with:
           path: |
             v1/cache/scores.json
             v1/cache/trends.json
             v1/cache/etf.json
+            v1/cache/model.json
           key: heavy-none
           restore-keys: heavy-
 
-      # 快取要沿用多久（小時）：08:40、16:30 → 評價 3、走勢 1、ETF 6；盤中 30 分鐘 → 只更新走勢；手動或推送 → 評價 6、走勢 2、ETF 12
+      # 快取要沿用多久（小時）。看盤時段（週一到週五 08:50～13:45）走勢統計 0.4 小時更新一次，其餘時間 2 小時；
+      # 評價與回測模型 3～6 小時；ETF 6 小時。手動勾選 force 則全部重算。
       - name: 決定快取重用時數
         id: ttl
+        env:
+          FORCE: ${{ inputs.force }}
         run: |
-          S='${{ github.event.schedule }}'
-          case "$S" in
-            "40 0 * * 1-5"|"30 8 * * 1-5") echo "scores=3" >> "$GITHUB_OUTPUT"; echo "trends=1" >> "$GITHUB_OUTPUT"; echo "etf=6" >> "$GITHUB_OUTPUT" ;;
-            "*/30 1-5 * * 1-5")            echo "scores=9999" >> "$GITHUB_OUTPUT"; echo "trends=0.4" >> "$GITHUB_OUTPUT"; echo "etf=9999" >> "$GITHUB_OUTPUT" ;;
-            *)                             echo "scores=6" >> "$GITHUB_OUTPUT"; echo "trends=2" >> "$GITHUB_OUTPUT"; echo "etf=12" >> "$GITHUB_OUTPUT" ;;
-          esac
+          D=$(date +%u); T=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+          if [ "$D" -le 5 ] && [ "$T" -ge 530 ] && [ "$T" -le 825 ]; then TR=0.4; else TR=2; fi
+          SC=3; ETF=6; BT=6
+          if [ "$FORCE" = "true" ]; then TR=0; SC=0; ETF=0; BT=0; fi
+          echo "trends=$TR" >> "$GITHUB_OUTPUT"; echo "scores=$SC" >> "$GITHUB_OUTPUT"; echo "etf=$ETF" >> "$GITHUB_OUTPUT"; echo "bt=$BT" >> "$GITHUB_OUTPUT"
+
+      - name: 走步驗證回測（大盤預測模型、歷史類似情境）
+        continue-on-error: true
+        timeout-minutes: 15
+        run: python backtest.py --reuse-hours ${{ steps.ttl.outputs.bt }}
 
       - name: 走勢統計（連續漲跌日數、K 棒警示、圖形型態）
         continue-on-error: true
@@ -77,12 +90,32 @@ jobs:
         timeout-minutes: 30
         run: python stock_scores.py --reuse-hours ${{ steps.ttl.outputs.scores }}
 
-      - name: 儲存快取（評價、走勢、ETF）
-        if: always() && hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json') != ''
+      - name: 儲存快取（評價、走勢、ETF、回測模型）
+        if: always() && hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json', 'v1/cache/model.json') != ''
         uses: actions/cache/save@v4
         with:
           path: |
             v1/cache/scores.json
             v1/cache/trends.json
             v1/cache/etf.json
-          key: heavy-${{ hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json') }}
+            v1/cache/model.json
+          key: heavy-${{ hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json', 'v1/cache/model.json') }}
+
+  # 接力：每一輪結束後自己再觸發下一輪（看盤時段到 17:30）。cron 保留，用來在每天開始時重新啟動。
+  next:
+    needs: refresh
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: 等待後再次觸發下一輪
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sleep 300
+          D=$(date +%u); T=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+          if [ "$D" -le 5 ] && [ "$T" -ge 510 ] && [ "$T" -le 1050 ]; then gh workflow run taiex-heavy.yml --ref "${{ github.ref_name }}"; else echo "目前不在接力時段，等 cron 重新啟動"; fi
