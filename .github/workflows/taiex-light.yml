@@ -1,7 +1,7 @@
 # 放在儲存庫的 .github/workflows/taiex-report.yml（覆蓋舊內容）
 # 輕量、快速：只產生大盤報告與篩選頁並發佈，不跑耗時的評價與走勢（那些在 taiex-heavy.yml）
 # 程式檔放在儲存庫的 v1 資料夾
-name: taiex-report
+name: taiex-report2
 
 on:
   schedule:
