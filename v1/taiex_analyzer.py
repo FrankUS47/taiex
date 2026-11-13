@@ -444,13 +444,64 @@ function resetRange(){document.querySelectorAll('.kc').forEach(function(w){var g
 </script>"""
 
 
-def pred_card(d, w, entry, weighted, now, pc, cur_today, tot):
+def bt_card(model, df, Q, ts, ks, ps):
+    """回測與歷史類似情境卡片（走步驗證結果、同分數區間統計、相似日子、相似走勢）。"""
+    import backtest as BT
+    g = {"技術面": ts, "K棒型態": ks, "圖形型態": ps,
+         "國際與資金面": sum(p for p, _ in macro_score(Q, None, None, None, None, df.index[-1].date())[0])}
+    wsc = sum(model["weights"][x] * g[x] for x in BT.GROUPS)
+    lab = PR.label_of(wsc)
+    o, kk = model["oos"], model["k"]
+    f1 = lambda v, d=1: "—" if v is None else f"{v * 100:.{d}f}%"
+    sg = lambda v: f'<span class="{cls(v)}">{v:+.2f}%</span>'
+    weak = (o["hit"] is None or o["hit"] < 0.52)
+    html_ = ['<div class="card"><h2>回測與歷史類似情境（走步驗證）</h2>',
+             f'<p>對過去每個交易日，只用<b>當天以前</b>的資料預測隔日漲跌，與實際比對後才調整權重，再預測下一天（樣本外預測）。'
+             f'期間 {o["first"]}～{o["last"]}，共 <b>{o["n"]}</b> 個交易日。</p>',
+             f'<p>方向性預判（|加權分數|≥2）{o["calls"]} 次，<b>命中率 {f1(o["hit"])}</b>（對照：隔日收漲的比例 {f1(o["base_up"])}）；'
+             f'預估幅度平均誤差 {o["mae"]:.2f}%（對照：永遠猜 0 的誤差 {o["mae0"]:.2f}%）；相關係數 {"—" if o["corr"] is None else format(o["corr"], ".2f")}。</p>']
+    if weak:
+        html_.append('<p class="bad">⚠ 回測的方向命中率與單純猜測相近，這組規則目前沒有明顯的預測力。請把它當成整理資訊的工具，不要當作預測。</p>')
+    rows = "".join(f'<tr><td>{x}</td><td>{model["weights"][x]:.2f}</td><td>{g[x]:+d}</td></tr>' for x in BT.GROUPS)
+    html_.append(f'<p>回測校準後：各構面權重如下；每 1 分約對應隔日 {kk:.2f}% 的漲跌。以<b>回測可用的構面</b>（不含新聞、台指期、法人）計算，'
+                 f'目前加權分數 <b>{wsc:+.1f}</b> → <b>{lab}</b>，約 <b>{kk * wsc:+.2f}%</b>。</p>'
+                 f'<table><tr><th>構面</th><th>回測權重</th><th>目前分數</th></tr>{rows}</table>')
+    brow = ""
+    for b in model["buckets"]:
+        hl = ' style="background:rgba(43,108,176,.12)"' if b["label"] == lab else ""
+        brow += (f'<tr{hl}><td>{b["label"]}</td><td>{b["n"]}</td><td>{f1(b["up"], 0)}</td>'
+                 f'<td>{"—" if b["avg"] is None else sg(b["avg"])}</td><td>{"—" if b["med"] is None else sg(b["med"])}</td></tr>')
+    html_.append('<h3 style="font-size:15px;margin:12px 0 4px">歷史上同樣分數區間，隔日實際怎麼走（目前所在區間已標色）</h3>'
+                 f'<table><tr><th>分數區間</th><th>樣本數</th><th>隔日收漲比例</th><th>平均漲跌</th><th>中位數</th></tr>{brow}</table>')
+    try:
+        knn = BT.analog_knn(model, BT.feature_vector(df, Q, g))
+        nrow = "".join(f'<tr><td>{x["date"]}</td><td>{x["dist"]:.2f}</td><td>{sg(x["next"])}</td></tr>' for x in knn["near"])
+        html_.append(f'<h3 style="font-size:15px;margin:12px 0 4px">歷史上最相似的日子（各構面分數、近期漲跌、美股、費半、VIX 最接近的 {knn["k"]} 天）</h3>'
+                     f'<p>這 {knn["k"]} 天的隔日：收漲 <b>{f1(knn["up"], 0)}</b>，平均 {sg(knn["avg"])}，中位數 {sg(knn["med"])}，'
+                     f'80% 的情況落在 {knn["p10"]:+.2f}% ～ {knn["p90"]:+.2f}%。</p>'
+                     f'<table><tr><th>最相似的 5 天</th><th>相似距離（越小越像）</th><th>隔日漲跌</th></tr>{nrow}</table>')
+    except Exception as e:  # noqa
+        STATUS.append(("歷史相似日（最近鄰）", False, f"{type(e).__name__}: {str(e)[:80]}"))
+    sh = BT.shape_analogs(df)
+    if sh:
+        srow = "".join(f'<tr><td>{x["start"]} ～ {x["end"]}</td><td>{x["dist"] * 100:.1f}</td><td>{sg(x["d1"])}</td><td>{sg(x["d5"])}</td></tr>' for x in sh)
+        a1, a5 = np.mean([x["d1"] for x in sh]), np.mean([x["d5"] for x in sh])
+        html_.append('<h3 style="font-size:15px;margin:12px 0 4px">過去是否出現過相同走勢（最近 20 日走勢的形狀比對）</h3>'
+                     f'<table><tr><th>相似的區間</th><th>形狀差異（越小越像）</th><th>之後 1 日</th><th>之後 5 日</th></tr>{srow}</table>'
+                     f'<p>這幾段之後的平均：1 日 {sg(a1)}、5 日 {sg(a5)}。</p>')
+    html_.append('<p class="note">以上是歷史統計，不保證未來。樣本相鄰的日子高度相關、特徵不少，容易被偶然的規律誤導；回測不含新聞、台指期與逐日法人（沒有長期歷史），'
+                 '這些只在上方的即時預判中計入。僅供研究參考，不構成投資建議。</p></div>')
+    return "".join(html_)
+
+
+def pred_card(d, w, entry, weighted, now, pc, cur_today, tot, wlive=None, mw=None, kk=None):
     """預測追蹤與自動調整卡片。"""
     wst = PR.weights(d)[1]
     rows = ""
     for k in PR.COMPS:
         hit = wst[k]["hit"]
-        rows += f'<tr><td>{k}</td><td>{w[k]:.2f}</td><td>{"—" if hit is None else format(hit * 100, ".0f") + "%"}</td><td>{wst[k]["n"]}</td></tr>'
+        rows += (f'<tr><td>{k}</td><td>{(mw or {}).get(k, 1.0):.2f}</td><td>{(wlive or w)[k]:.2f}</td><td><b>{w[k]:.2f}</b></td>'
+                 f'<td>{"—" if hit is None else format(hit * 100, ".0f") + "%"}</td><td>{wst[k]["n"]}</td></tr>')
     done = [e for e in d["entries"] if e.get("actual_pct") is not None][-10:][::-1]
     hist = "".join(
         f'<tr><td>{e["for_date"]}</td><td>{e["label"]}（{e.get("weighted", e["raw"]):+.1f}）</td><td class="{cls(e["actual_pct"])}">{e["actual_pct"]:+.2f}%</td>'
@@ -464,8 +515,9 @@ def pred_card(d, w, entry, weighted, now, pc, cur_today, tot):
     _, _, info = PR.weights(d)
     return ('<div class="card"><h2>預測追蹤與自動調整</h2>'
             f'<p>目標交易日 <b>{tgt}</b>：原始總分 {tot:+d}，依各構面權重加權後 <b>{weighted:+.1f}</b> → <b>{PR.label_of(weighted)}</b>。'
-            f'已結算 {info["done"]} 天；方向性預判（|分數|≥2）{info["calls"]} 次，命中 {info["ok"]} 次。</p>{live}'
-            '<table><tr><th>構面</th><th>目前權重</th><th>方向命中率</th><th>樣本數</th></tr>' + rows + '</table>'
+            f'已結算 {info["done"]} 天；方向性預判（|分數|≥2）{info["calls"]} 次，命中 {info["ok"]} 次。'
+            + (f'依回測校準（每 1 分約 {kk:.2f}%），預估隔日漲跌約 <b>{kk * weighted:+.2f}%</b>。' if kk else '') + f'</p>{live}'
+            '<table><tr><th>構面</th><th>回測權重</th><th>即時微調</th><th>合計權重</th><th>即時方向命中率</th><th>樣本數</th></tr>' + rows + '</table>'
             + ('<h3 style="font-size:15px;margin:10px 0 4px">最近已結算的預判（預判＝目標日開盤前最後一次）</h3><table><tr><th>日期</th><th>預判</th><th>實際漲跌</th><th>結果</th></tr>' + hist + '</table>' if hist else
                '<p class="note">還沒有已結算的預判。每個目標交易日收盤後（約 13:45 之後）才會用實際漲跌結算並調整權重。</p>')
             + '<p class="note">自動調整方式：每次產生報告都記錄當時五個構面的分數；目標日收盤後比對實際漲跌，算出各構面的方向命中率，'
@@ -735,10 +787,19 @@ def build(refresh=0):
     now = dt.datetime.now()
     comps = {"技術面": ts, "K棒型態": ks, "圖形型態": ps, "國際與資金面": ms, "消息面": ns}
     weighted, w, entry, pdat = float(tot), {k: 1.0 for k in PR.COMPS}, None, None
+    model, w_live = None, {k: 1.0 for k in PR.COMPS}
+    try:
+        import backtest as BT
+        model = BT.load_model()
+        STATUS.append(("回測模型(cache/model.json，由 backtest.py 產生)", bool(model), "OK" if model else "尚無（需先執行 backtest.py；heavy workflow 會產生）"))
+    except Exception as e:  # noqa
+        STATUS.append(("回測模型(cache/model.json)", False, f"{type(e).__name__}: {str(e)[:80]}"))
+    mw = (model or {}).get("weights", {})
     try:
         pdat = PR.load()
         PR.update_outcomes(pdat, df, now)
-        w = PR.weights(pdat)[0]
+        w_live = PR.weights(pdat)[0]
+        w = {k: w_live[k] * mw.get(k, 1.0) for k in PR.COMPS}
         weighted = sum(w[k] * v for k, v in comps.items())
         entry = PR.record(pdat, now, comps, tot, weighted, float(df["Close"].iloc[-1]), w)
         PR.save(pdat)
@@ -778,7 +839,12 @@ def build(refresh=0):
     p.append(f'<p>近20日壓力約 <b>{info["hi"]:,.0f}</b>，支撐約 <b>{info["lo"]:,.0f}</b>；有效突破壓力偏多，跌破支撐轉弱。</p></div>')
     today_s = now.strftime("%Y%m%d")
     if pdat is not None:
-        p.append(pred_card(pdat, w, entry, weighted, now, pc, today_s in cur["time"].replace("-", ""), tot))
+        p.append(pred_card(pdat, w, entry, weighted, now, pc, today_s in cur["time"].replace("-", ""), tot, w_live, mw, (model or {}).get("k")))
+    if model:
+        try:
+            p.append(bt_card(model, df, Q, ts, ks, ps))
+        except Exception as e:  # noqa
+            STATUS.append(("回測卡片", False, f"{type(e).__name__}: {str(e)[:100]}"))
     p.append('<div class="card"><h2>K 線圖（可調整時間範圍）</h2>')
     p.append(RANGE_HTML)
     ih = safe("三大法人歷史(逐日BFI82U，快取)", inst_history, [x.date() for x in df.index[-45:]])
