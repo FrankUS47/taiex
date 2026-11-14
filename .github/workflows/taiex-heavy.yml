@@ -54,6 +54,7 @@ jobs:
             v1/cache/trends.json
             v1/cache/etf.json
             v1/cache/model.json
+            v1/cache/adr.json
           key: heavy-none
           restore-keys: heavy-
 
@@ -75,6 +76,11 @@ jobs:
         timeout-minutes: 15
         run: python backtest.py --reuse-hours ${{ steps.ttl.outputs.bt }}
 
+      - name: ADR 與台股隔日走勢關係研究（台積電、聯電、日月光、中華電信）
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python adr_study.py --reuse-hours ${{ steps.ttl.outputs.bt }}
+
       - name: 走勢統計（連續漲跌日數、K 棒警示、圖形型態）
         continue-on-error: true
         timeout-minutes: 25
@@ -91,7 +97,7 @@ jobs:
         run: python stock_scores.py --reuse-hours ${{ steps.ttl.outputs.scores }}
 
       - name: 儲存快取（評價、走勢、ETF、回測模型）
-        if: always() && hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json', 'v1/cache/model.json') != ''
+        if: always() && hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json', 'v1/cache/model.json', 'v1/cache/adr.json') != ''
         uses: actions/cache/save@v4
         with:
           path: |
@@ -99,7 +105,8 @@ jobs:
             v1/cache/trends.json
             v1/cache/etf.json
             v1/cache/model.json
-          key: heavy-${{ hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json', 'v1/cache/model.json') }}
+            v1/cache/adr.json
+          key: heavy-${{ hashFiles('v1/cache/scores.json', 'v1/cache/trends.json', 'v1/cache/etf.json', 'v1/cache/model.json', 'v1/cache/adr.json') }}
 
   # 接力：每一輪結束後自己再觸發下一輪（看盤時段到 17:30）。cron 保留，用來在每天開始時重新啟動。
   next:
