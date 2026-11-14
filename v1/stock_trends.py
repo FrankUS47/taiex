@@ -98,6 +98,8 @@ def batch(symbols, extra=None):
             pats = sorted(pats, key=lambda q: (not q["confirmed"], q["bias"] == 0))[:2]
             r.append([CP.short(q) for q in pats])
             r.append(str(ohlc.index[-1].date()))   # 第 7 欄：這檔日K最新日期
+            adv = ohlc["Close"].pct_change().abs().tail(20).mean() * 100
+            r.append(round(float(adv), 2) if adv == adv else None)   # 第 8 欄：近 20 日平均單日波動（%）
             recs[s] = r
             if pats:
                 n = len(ohlc)

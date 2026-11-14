@@ -32,6 +32,10 @@ OUT_FILE = Path(__file__).with_name("universe.html")
 TRENDS = Path(__file__).with_name("cache") / "trends.json"
 ETFC = Path(__file__).with_name("cache") / "etf.json"
 ADRC = Path(__file__).with_name("cache") / "adr.json"
+PREDC = Path(__file__).with_name("cache") / "stock_pred.json"
+MKTC = Path(__file__).with_name("cache") / "market_pred.json"
+EXTRA = {}          # 代號 -> (開, 高, 低, 昨收)，來自收盤行情；盤中會被即時報價覆蓋
+DATE_ALL = [""]     # 收盤行情的資料日期
 
 IND = {"01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維", "05": "電機機械", "06": "電器電纜",
        "08": "玻璃陶瓷", "09": "造紙工業", "10": "鋼鐵工業", "11": "橡膠工業", "12": "汽車工業", "14": "建材營造",
@@ -90,6 +94,12 @@ def listed():
         code, price = str(r["Code"]).strip(), num(r["ClosingPrice"])
         if price and price > 0:
             out.append(row(code, str(r["Name"]).strip(), "上市", price, num(r.get("Change")) or 0.0, num(r["TradeVolume"]) or 0, val))
+            EXTRA[code] = (num(r.get("OpeningPrice")), num(r.get("HighestPrice")), num(r.get("LowestPrice")), price - (num(r.get("Change")) or 0.0))
+            ds = str(r.get("Date", "")).strip()
+            if not DATE_ALL[0] and re.fullmatch(r"\d{7}", ds):
+                DATE_ALL[0] = f"{int(ds[:3]) + 1911}-{ds[3:5]}-{ds[5:7]}"
+            elif not DATE_ALL[0] and re.fullmatch(r"\d{8}", ds):
+                DATE_ALL[0] = f"{ds[:4]}-{ds[4:6]}-{ds[6:8]}"
     if not out:
         raise RuntimeError("無有效收盤價")
     return out
@@ -111,6 +121,7 @@ def otc():
         if code and price and price > 0:
             out.append(row(code, str(pick(r, "CompanyName", "Name") or code).strip(), "上櫃", price,
                            num(pick(r, "Change")) or 0.0, num(pick(r, "TradingShares", "TradeVolume")) or 0, val))
+            EXTRA[code] = (num(pick(r, "Open")), num(pick(r, "High")), num(pick(r, "Low")), price - (num(pick(r, "Change")) or 0.0))
     if not out:
         raise RuntimeError(f"欄位不符，實際欄位：{list(q[0].keys())}")
     return out
@@ -185,6 +196,7 @@ def realtime_overlay(stocks):
             r = ch.get(f"{m.get('ex')}_{m.get('c')}.tw")
             if r and z and y and y > 0:
                 r[4], r[5] = z, round((z - y) / y * 100, 2)
+                r[13], r[14], r[15], r[16] = num(m.get("o")), num(m.get("h")), num(m.get("l")), y   # 今日開高低與昨收（還沒開盤時為 None）
                 if v is not None:
                     r[6] = round(v)
                 bt, at = _sum_levels(m.get("g")), _sum_levels(m.get("f"))   # 最佳五檔：委買總量、委賣總量（張）
@@ -355,7 +367,7 @@ th.c-name,td.c-name{position:sticky;left:64px;background:var(--card);z-index:2;b
 <button onclick="reset()">重設條件</button></div>
 <details><summary>產業別（點開選擇，預設全選）</summary><div style="margin:6px 0"><button onclick="allInd(true)">全選</button><button onclick="allInd(false)">全不選</button></div><div id="indbox"></div></details>
 <details><summary>顯示欄位（表格太寬時，可隱藏不需要的欄位；點欄位名稱可排序）</summary><div style="margin:6px 0"><button onclick="colPreset('lite')">精簡</button><button onclick="colPreset('full')">完整</button></div><div id="colbox"></div></details>
-<p class="note" id="sn"></p><p class="note" id="cnt"></p>
+<p class="note" id="sn"></p><p class="note" id="psum"></p><p class="note" id="cnt"></p>
 <p class="note">顏色與百分比：<span class="up">紅色＝偏多（偏買進）傾向</span>、<span class="dn">綠色＝偏空（偏賣出）傾向</span>，百分比越大程度越強。「技術傾向」由圖形型態（已確認 ±2、形成中 ±1）、連續漲跌 3 日以上、20 日漲跌超過 5%、K 棒警示（長紅黑、跳空）加總，最多 ±100%；「綜合傾向」由深入評價總分換算（僅有評價的股票）。皆為規則式量化傾向，不是買賣建議，也不保證未來表現。</p><div class="w"><table id="st"></table></div></section>
 
 <section id="tb" class="card" style="display:none"><p class="note">依目前報價計算各產業（僅一般股票）的平均漲跌、上漲與下跌家數與總成交量；點產業名稱會跳到篩選頁並只選該產業。</p><div class="w"><table id="btb"></table></div></section>
@@ -420,7 +432,7 @@ function detHtml(c){const k=SC[c],t=TR[c];let h=anaHtml(c)+warrHtml(c)+etfHtml(c
  return h+"<b>基本面 "+k.fs+"</b><ul>"+(li(k.F)||"<li>Yahoo 無財報資料，不計分</li>")+"</ul><b>技術面 "+k.ts+"</b><ul>"+li(k.T)+"</ul><b>消息面 "+k.ns+"</b><ul>"+(li(k.N)||"<li>無新聞資料</li>")+"</ul>"+
  (k.news.length?"<b>相關新聞</b><ul>"+k.news.map(n=>"<li><a href='"+(/^https?:/.test(n[1])?esc(n[1]):"#")+"' target='_blank' rel='noopener'>"+esc(n[0])+"</a></li>").join("")+"</ul>":"")+
  "<p class='note'>近20日壓力 "+k.hi.toFixed(2)+"、支撐 "+k.lo.toFixed(2)+"；評價時間 "+esc(k.t)+"。規則式評分，不是買賣建議。</p>"}
-var SORTC={k:null,d:1},HID=new Set(["kind","mkt","ns","bt","at","dl","tot3"]);
+var SORTC={k:null,d:1},HID=new Set(["kind","mkt","ns","bt","at","dl","tot3","pg","ag"]);
 try{const j=JSON.parse(localStorage.getItem("uni_hid2")||"null");if(Array.isArray(j))HID=new Set(j)}catch(e){}
 const ROWS={},NAMES={},INST={},WARR=D.warr||{};
 D.stocks.forEach(s=>{ROWS[s[0]]=s;NAMES[s[1]]=s});
@@ -503,6 +515,34 @@ const nz=(x,f)=>x==null?"—":f(x);
 const num0=v=>v==null?"—":"<span class='"+(v>0?"up":v<0?"dn":"")+"'>"+(v>0?"+":"")+v.toLocaleString()+"</span>";
 const TRv=(c,i)=>TR[c]?TR[c][i]:null;
 const brv=s=>(s[11]!=null&&s[12]!=null&&s[11]+s[12]>0)?Math.round(s[11]/(s[11]+s[12])*100):null;
+const MK=D.mkt||{},PRD=D.pred||{},SNAPS=PRD.snaps||[],CALV=(PRD.cal&&PRD.cal.value)||1;
+const SNAP=SNAPS.find(x=>x.for===D.data_date&&!x.late)||null;
+const advOf=c=>{const t=TR[c];return t&&t[7]?t[7]:2.0};
+function shapePred(gap,close,adv){const g=Math.max(.15,.2*adv),i=Math.max(.2,.3*adv),x=close-gap;
+ if(gap>=g&&x<=-i)return"開高走低";if(gap<=-g&&x>=i)return"開低走高";
+ if(Math.abs(gap)<g&&close>=i)return"一路上漲";if(Math.abs(gap)<g&&close<=-i)return"一路下跌";
+ if(gap>=g&&x>=i)return"開高走高";if(gap<=-g&&x<=-i)return"開低走低";return"盤整"}
+function shapeActual(s){const o=s[13],h=s[14],l=s[15],y=s[16],z=s[4];if(o==null||h==null||l==null||!y)return null;
+ const adv=advOf(s[0]),g=Math.max(.15,.2*adv),i=Math.max(.2,.3*adv),gap=(o/y-1)*100,intr=(z/o-1)*100,rg=h-l,po=rg>0?(o-l)/rg:.5,pz=rg>0?(z-l)/rg:.5;
+ if(intr>=i&&po<=.25&&pz>=.75)return"一路上漲";if(intr<=-i&&po>=.75&&pz<=.25)return"一路下跌";
+ if(gap>=g&&intr<=-i)return"開高走低";if(gap<=-g&&intr>=i)return"開低走高";if(gap>=g&&intr>=i)return"開高走高";if(gap<=-g&&intr<=-i)return"開低走低";return"盤整"}
+const UPG=new Set(["一路上漲","開高走高"]),DNG=new Set(["一路下跌","開低走低"]);
+const shapeOk=(a,b)=>!!(a&&b&&(a===b||(UPG.has(a)&&UPG.has(b))||(DNG.has(a)&&DNG.has(b))));
+const shCls=sh=>(UPG.has(sh)||sh==="開低走高")?"up":(DNG.has(sh)||sh==="開高走低")?"dn":"mid";
+const shChip=sh=>sh?"<span class='chip "+shCls(sh)+"' style='cursor:default'>"+sh+"</span>":"—";
+function predNow(c,useCal){const a=analysis(c);if(!a.items.length&&!MK.adv)return null;const adv=advOf(c),ratio=MK.adv?adv/MK.adv:1,k=MK.k||.12;
+ const cal=useCal===false?1:CALV,close=cal*ratio*((MK.close||0)+a.total*k*.5),gap=(MK.gap_adr&&MK.gap_adr[c]!=null)?MK.gap_adr[c]:(MK.gap||0)*ratio;
+ return {total:a.total,gap:gap,close:close,shape:shapePred(gap,close,adv)}}
+function preOf(c){if(!SNAP)return null;const v=SNAP.stocks[c];if(!v)return null;const adv=advOf(c),cal=SNAP.cal||1,close=v[2]*cal;return {total:v[0],gap:v[1],close:close,shape:shapePred(v[1],close,adv)}}
+const actGap=s=>(s[13]!=null&&s[16])?(s[13]/s[16]-1)*100:null;
+function predSummary(r){
+ if(!SNAP)return "預測對照：目前沒有「"+esc(D.data_date||"—")+"」的盤前預測快照。預測會在每個交易日開盤前凍結，開盤後不再更動，所以隔一個交易日起就能看到「盤前預測 vs 實際」的差異。";
+ let n=0,hit=0,hn=0,err=0,base=0,sh=0,shn=0;
+ r.forEach(s=>{const p=preOf(s[0]);if(!p)return;n++;err+=Math.abs(s[5]-p.close);base+=Math.abs(s[5]);if(Math.abs(p.close)>=.05){hn++;if(Math.sign(p.close)===Math.sign(s[5]))hit++}
+  const a=shapeActual(s);if(a){shn++;if(shapeOk(a,p.shape))sh++}});
+ if(!n)return "預測對照：目前篩選結果中沒有可比對的標的。";
+ return "預測對照（資料日 "+esc(D.data_date)+"，盤前快照 "+esc(SNAP.made)+"，校準係數 "+(SNAP.cal||1).toFixed(2)+"）：有比對 "+n+" 檔｜方向命中率 "+(hn?(hit/hn*100).toFixed(0)+"%":"—")+"（"+hn+" 檔）｜平均絕對誤差 "+(err/n).toFixed(2)+"%（對照：永遠猜 0 的誤差 "+(base/n).toFixed(2)+"%）｜開盤到收盤形態命中率 "+(shn?(sh/shn*100).toFixed(0)+"%":"—")+"（"+shn+" 檔，盤中形態是到目前為止）"}
+const diffCell=s=>{const p=preOf(s[0]);if(!p)return"—";const d=s[5]-p.close,big=Math.abs(d)>advOf(s[0]);return "<span class='"+(d>0?"up":d<0?"dn":"")+"'>"+(big?"<b>":"")+(d>0?"+":"")+d.toFixed(2)+(big?"</b>":"")+"</span>"};
 const COLS=[
  {k:"code",l:"代號",v:s=>s[0],s:1,r:(s,c)=>"<a href='https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID="+c+"' target='_blank' rel='noopener' onclick='event.stopPropagation()'>"+c+"</a>"},
  {k:"name",l:"名稱",v:s=>s[1],s:1,r:s=>esc(s[1])},
@@ -511,6 +551,11 @@ const COLS=[
  {k:"vol",l:"量(張)",v:s=>s[6],r:s=>s[6].toLocaleString()},
  {k:"tend",l:"綜合傾向",v:s=>tendPct(s[0]),r:s=>{const a=analysis(s[0]);return badge(a.pct,a.lab)}},
  {k:"tech",l:"技術傾向",v:s=>techPct(s[0]),r:s=>badge(techPct(s[0]))},
+ {k:"nx",l:"次日預測",v:s=>{const p=predNow(s[0]);return p?p.close:null},r:s=>{const p=predNow(s[0]);return p?pcs(+p.close.toFixed(2))+" "+shChip(p.shape):"—"}},
+ {k:"pc",l:"盤前預測%",v:s=>{const p=preOf(s[0]);return p?p.close:null},r:s=>{const p=preOf(s[0]);return p?pcs(+p.close.toFixed(2)):"—"}},
+ {k:"pd",l:"預測差異(實際−預測)",v:s=>{const p=preOf(s[0]);return p?s[5]-p.close:null},r:s=>diffCell(s)},
+ {k:"ps",l:"預測形態(盤前)",v:s=>{const p=preOf(s[0]);return p?p.shape:null},s:1,r:s=>{const p=preOf(s[0]);return p?shChip(p.shape):"—"}},
+ {k:"as",l:"實際形態",v:s=>shapeActual(s),s:1,r:s=>{const a=shapeActual(s),p=preOf(s[0]);return a?shChip(a)+(p?(shapeOk(a,p.shape)?" <span class='up'>✓</span>":" <span class='dn'>✗</span>"):""):"—"}},
  {k:"br",l:"委買比%",v:s=>brv(s),r:s=>{const b=brv(s);return b==null?"—":"<span class='"+(b>=60?"up":b<=40?"dn":"")+"'>"+b+"%</span>"}},
  {k:"fi",l:"外資(張)",v:s=>INST[s[0]]?INST[s[0]][2]:null,r:s=>num0(INST[s[0]]?INST[s[0]][2]:null)},
  {k:"it",l:"投信(張)",v:s=>INST[s[0]]?INST[s[0]][3]:null,r:s=>num0(INST[s[0]]?INST[s[0]][3]:null)},
@@ -532,10 +577,12 @@ const COLS=[
  {k:"bt",l:"委買(張)",v:s=>s[11],r:s=>s[11]==null?"—":s[11].toLocaleString()},
  {k:"at",l:"委賣(張)",v:s=>s[12],r:s=>s[12]==null?"—":s[12].toLocaleString()},
  {k:"dl",l:"自營(張)",v:s=>INST[s[0]]?INST[s[0]][4]:null,r:s=>num0(INST[s[0]]?INST[s[0]][4]:null)},
- {k:"tot3",l:"三大法人(張)",v:s=>INST[s[0]]?INST[s[0]][5]:null,r:s=>num0(INST[s[0]]?INST[s[0]][5]:null)}];
+ {k:"tot3",l:"三大法人(張)",v:s=>INST[s[0]]?INST[s[0]][5]:null,r:s=>num0(INST[s[0]]?INST[s[0]][5]:null)},
+ {k:"pg",l:"預測開盤%",v:s=>{const p=preOf(s[0]);return p?p.gap:null},r:s=>{const p=preOf(s[0]);return p?pcs(+p.gap.toFixed(2)):"—"}},
+ {k:"ag",l:"實際開盤%",v:s=>actGap(s),r:s=>{const g=actGap(s);return g==null?"—":pcs(+g.toFixed(2))}}];
 $("colbox").innerHTML=COLS.map(c=>"<label><input type='checkbox' class='col' value='"+c.k+"'"+(HID.has(c.k)?"":" checked")+" onchange='setCols()'>"+c.l+"</label>").join("");
 function setCols(){HID=new Set([...document.querySelectorAll(".col")].filter(x=>!x.checked).map(x=>x.value));try{localStorage.setItem("uni_hid2",JSON.stringify([...HID]))}catch(e){}render()}
-function colPreset(m){const keep=new Set(["code","name","px","pct","vol","tend","tech","br","fi","it","stk","pat","kb"]);
+function colPreset(m){const keep=new Set(["code","name","px","pct","vol","tend","tech","nx","pc","pd","ps","as","br","fi","it","stk","pat","kb"]);
  document.querySelectorAll(".col").forEach(x=>{x.checked=(m==="full")||keep.has(x.value)});setCols()}
 function sortCol(k){if(SORTC.k!==k)SORTC={k:k,d:1};else if(SORTC.d===1)SORTC={k:k,d:-1};else SORTC={k:null,d:1};render()}
 function render(){
@@ -548,6 +595,7 @@ function render(){
  if(SORTC.k){const c=COLS.find(x=>x.k===SORTC.k),d=SORTC.d;r.sort((a,b)=>{const x=c.v(a),y=c.v(b);if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (c.s?String(x).localeCompare(String(y),"zh-Hant"):x-y)*d})}
  else r.sort(SORT[$("sort").value]);
  $("cnt").textContent="符合 "+r.length+" 檔"+(r.length>300?"（僅顯示前 300 檔，請加條件縮小）":"")+"｜點欄位名稱排序（再點反向，第三次取消）｜點任一列可展開走勢與評價理由";
+ $("psum").innerHTML=predSummary(r);
  const vis=COLS.filter(c=>!HID.has(c.k));
  $("st").innerHTML="<tr>"+vis.map(c=>"<th class='srt c-"+c.k+"' data-k='"+c.k+"' onclick='sortCol(this.dataset.k)'>"+c.l+(SORTC.k===c.k?(SORTC.d===1?" ▲":" ▼"):"")+"</th>").join("")+"</tr>"+
  r.slice(0,300).map(s=>{const c=esc(s[0]);return "<tr data-c='"+c+"' onclick='det(this.dataset.c)' style='cursor:pointer'>"+vis.map(x=>"<td class='c-"+x.k+"'>"+x.r(s,c)+"</td>").join("")+"</tr><tr id='d_"+c+"' style='display:none'><td colspan='"+vis.length+"' style='white-space:normal'>"+detHtml(s[0])+"</td></tr>"}).join("")}
@@ -596,7 +644,7 @@ def main():
     imap = {**(safe("櫃買產業別(t187ap03_O)", industries_otc) or {}), **(safe("證交所產業別(t187ap03_L)", industries) or {})}
     for r in stocks:
         r.append("ETF/ETN" if r[2] == "ETF/ETN" else "存託憑證" if r[2] == "TDR" else imap.get(r[0], "未分類"))
-        r += [None, None]          # 第 11、12 欄：最佳五檔委買總量、委賣總量（張，即時報價有覆蓋才有值）
+        r += [None, None] + list(EXTRA.get(r[0], (None, None, None, None)))   # 11、12：最佳五檔委買／委賣總量；13～16：開、高、低、昨收
     rt = safe("證交所即時報價（個股，盤中疊加，含最佳五檔）", realtime_overlay, stocks)
     wr = None if a.no_warrants else safe("權證收盤行情(MI_INDEX type=0999)", warrant_rows)
     warr, warr_day = {}, ""
@@ -609,6 +657,17 @@ def main():
     scores, scored_at, _ = load_cache(SCORES)
     trends, trends_at, tj = load_cache(TRENDS)
     etf, _, _ = load_cache(ETFC)
+    data_date = f"{rt[1][:4]}-{rt[1][4:6]}-{rt[1][6:8]}" if (rt and rt[1][:8].isdigit()) else DATE_ALL[0]
+    try:
+        predj = json.loads(PREDC.read_text(encoding="utf-8"))
+    except Exception:  # noqa
+        predj = {}
+    try:
+        mkj = json.loads(MKTC.read_text(encoding="utf-8"))
+    except Exception:  # noqa
+        mkj = {}
+    STATUS.append(("個股預測快照(cache/stock_pred.json)", bool(predj.get("snaps")), f"{len(predj.get('snaps', []))} 份" if predj.get("snaps") else "尚無（今天開盤前會建立，隔天起可比對）"))
+    STATUS.append(("大盤預測(cache/market_pred.json，由 taiex_analyzer 產生)", bool(mkj), "OK" if mkj else "尚無"))
     try:
         adr = json.loads(ADRC.read_text(encoding="utf-8"))
     except Exception:  # noqa
@@ -631,7 +690,7 @@ def main():
     st = "".join(f'<tr><td>{html.escape(n)}</td><td>{"成功" if ok else "失敗"}</td><td>{html.escape(m)}</td></tr>' for n, ok, m in STATUS)
     data = json.dumps({"stocks": stocks, "warrants": war, "apply": app, "scores": scores, "scored_at": scored_at,
                        "trends": trends, "trends_at": trends_at, "inst": inst,
-                       "series": tj.get("series", {}), "etf": etf, "warr": warr, "warr_day": warr_day, "adr": adr,
+                       "series": tj.get("series", {}), "etf": etf, "warr": warr, "warr_day": warr_day, "adr": adr, "pred": predj, "mkt": mkj, "data_date": data_date,
                        "trends_asof": tj.get("asof", ""), "trends_stale": bool(tj.get("asof")) and tj.get("asof") < expected_last_day().isoformat(), "help": {k: v for k, v in HELP.items()}, "pattern_tail": TAIL}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     src = f"證交所即時（{rt[1]}，覆蓋 {rt[0]}/{rt[2]} 檔，其餘為最近收盤）" if rt else "最近一個交易日的收盤價（即時報價抓不到或非開盤時段）"
     page = (PAGE.replace("__DATA__", data).replace("__KINDS__", kh).replace("__STATUS__", st)

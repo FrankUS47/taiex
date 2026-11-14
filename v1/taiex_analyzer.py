@@ -454,6 +454,44 @@ function resetRange(){document.querySelectorAll('.kc').forEach(function(w){var g
 </script>"""
 
 
+def shape_pred(gap, close, adv):
+    """依預測的開盤跳空（%）與收盤漲跌（%）判斷日內形態；門檻隨平均單日波動 adv 縮放。"""
+    g, i = max(0.15, 0.2 * adv), max(0.2, 0.3 * adv)
+    x = close - gap
+    if gap >= g and x <= -i:
+        return "開高走低"
+    if gap <= -g and x >= i:
+        return "開低走高"
+    if abs(gap) < g and close >= i:
+        return "一路上漲"
+    if abs(gap) < g and close <= -i:
+        return "一路下跌"
+    if gap >= g and x >= i:
+        return "開高走高"
+    if gap <= -g and x <= -i:
+        return "開低走低"
+    return "盤整"
+
+
+def market_pred(now, df, weighted, w, ms, model, adrm, Q):
+    """大盤的預測開盤跳空與收盤漲跌；同時寫入 cache/market_pred.json，供個股預測使用。"""
+    k = (model or {}).get("k", 0.12)
+    gst = (model or {}).get("gap") or {}
+    kg = gst.get("k", 0.05)
+    adv = gst.get("adv") or float(df["Close"].pct_change().abs().tail(60).mean() * 100)
+    close, gap = k * weighted, kg * w.get("國際與資金面", 1.0) * ms
+    gap_adr = {}
+    for sym, pr in ((adrm or {}).get("pairs") or {}).items():
+        q = Q.get(ADR_NAMES.get(sym, ""))
+        if q:
+            gap_adr[pr["code"]] = round(pr["alpha"] + pr["beta"] * q["pct"], 3)
+    out = {"for": PR.target_date(now).isoformat(), "made": now.strftime("%Y-%m-%d %H:%M"), "gap": round(gap, 3), "close": round(close, 3),
+           "k": round(k, 4), "adv": round(adv, 3), "gap_adr": gap_adr, "shape": shape_pred(gap, close, adv), "gap_stats": gst}
+    CACHE_DIR.mkdir(exist_ok=True)
+    (CACHE_DIR / "market_pred.json").write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    return out
+
+
 ADR_NAMES = {"TSM": "台積電ADR", "UMC": "聯電ADR", "ASX": "日月光投控ADR", "CHT": "中華電信ADR"}
 
 
@@ -556,7 +594,7 @@ def bt_card(model, df, Q, ts, ks, ps):
     return "".join(html_)
 
 
-def pred_card(d, w, entry, weighted, now, pc, cur_today, tot, wlive=None, mw=None, kk=None):
+def pred_card(d, w, entry, weighted, now, pc, cur_today, tot, wlive=None, mw=None, kk=None, mkp=None):
     """預測追蹤與自動調整卡片。"""
     wst = PR.weights(d)[1]
     rows = ""
@@ -575,10 +613,17 @@ def pred_card(d, w, entry, weighted, now, pc, cur_today, tot, wlive=None, mw=Non
         live = (f'<p><b>盤中修正：</b>盤前預判 {entry["label"]}（加權 {entry["weighted"]:+.1f}）；目前盤中 <span class="{cls(pc)}">{pc:+.2f}%</span>（相當 {lp:+.1f} 分）；'
                 f'依已開盤時間比例混合（實際走勢占 {wl * 100:.0f}%）→ <b>修正後 {PR.label_of(adj)}（{adj:+.1f}）</b>。</p>')
     _, _, info = PR.weights(d)
+    shp = ""
+    if mkp:
+        gs = mkp.get("gap_stats") or {}
+        shp = (f'<p><b>預測日內走勢：</b>開盤跳空約 <span class="{cls(mkp["gap"])}">{mkp["gap"]:+.2f}%</span>、收盤約 <span class="{cls(mkp["close"])}">{mkp["close"]:+.2f}%</span>'
+               f' → <b>{mkp["shape"]}</b>（開高走低、開低走高、一路上漲、一路下跌、開高走高、開低走低、盤整）。'
+               + (f'回測：開盤跳空方向命中率 {gs["hit"] * 100:.0f}%、平均誤差 {gs["mae"]:.2f}%（對照：永遠猜 0 的誤差 {gs["mae0"]:.2f}%）。' if gs.get("hit") is not None else '')
+               + '這個形態判斷是由預測的開盤與收盤相對大小推得，誤差會比方向預測更大。</p>')
     return ('<div class="card"><h2>預測追蹤與自動調整</h2>'
             f'<p>目標交易日 <b>{tgt}</b>：原始總分 {tot:+d}，依各構面權重加權後 <b>{weighted:+.1f}</b> → <b>{PR.label_of(weighted)}</b>。'
             f'已結算 {info["done"]} 天；方向性預判（|分數|≥2）{info["calls"]} 次，命中 {info["ok"]} 次。'
-            + (f'依回測校準（每 1 分約 {kk:.2f}%），預估隔日漲跌約 <b>{kk * weighted:+.2f}%</b>。' if kk else '') + f'</p>{live}'
+            + (f'依回測校準（每 1 分約 {kk:.2f}%），預估隔日漲跌約 <b>{kk * weighted:+.2f}%</b>。' if kk else '') + f'</p>{shp}{live}'
             '<table><tr><th>構面</th><th>回測權重</th><th>即時微調</th><th>合計權重</th><th>即時方向命中率</th><th>樣本數</th></tr>' + rows + '</table>'
             + ('<h3 style="font-size:15px;margin:10px 0 4px">最近已結算的預判（預判＝目標日開盤前最後一次）</h3><table><tr><th>日期</th><th>預判</th><th>實際漲跌</th><th>結果</th></tr>' + hist + '</table>' if hist else
                '<p class="note">還沒有已結算的預判。每個目標交易日收盤後（約 13:45 之後）才會用實際漲跌結算並調整權重。</p>')
@@ -910,8 +955,13 @@ def build(refresh=0):
     p.append(f'<div class="big">{"今日" if PR.target_date(now) == now.date() else "隔日"}預判：<span class="{c}">{label}</span>（加權後 {weighted:+.1f}；原始總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋圖形型態 {ps:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
     p.append(f'<p>近20日壓力約 <b>{info["hi"]:,.0f}</b>，支撐約 <b>{info["lo"]:,.0f}</b>；有效突破壓力偏多，跌破支撐轉弱。</p></div>')
     today_s = now.strftime("%Y%m%d")
+    mkp = None
+    try:
+        mkp = market_pred(now, df, weighted, w, ms, model, adrm, Q)
+    except Exception as e:  # noqa
+        STATUS.append(("大盤預測檔(cache/market_pred.json)", False, f"{type(e).__name__}: {str(e)[:100]}"))
     if pdat is not None:
-        p.append(pred_card(pdat, w, entry, weighted, now, pc, today_s in cur["time"].replace("-", ""), tot, w_live, mw, (model or {}).get("k")))
+        p.append(pred_card(pdat, w, entry, weighted, now, pc, today_s in cur["time"].replace("-", ""), tot, w_live, mw, (model or {}).get("k"), mkp))
     if adrm:
         try:
             p.append(adr_card(adrm, Q))

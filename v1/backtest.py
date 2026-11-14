@@ -86,6 +86,8 @@ def run(period="6y", start=260):
     tw, series = load_series(period)
     w, k = {g: 1.0 for g in GROUPS}, K0
     rows, closes, dates = [], tw["Close"].to_numpy(float), tw.index
+    opens = tw["Open"].to_numpy(float)
+    gxx = gxy = 0.0   # 開盤跳空模型：跳空 ≈ kg × （國際與資金面權重×分數），以累積迴歸逐步校正
     print(f"加權日K {len(tw)} 根（{dates[0].date()}～{dates[-1].date()}），海外序列 {len(series)} 條；走步驗證從第 {start} 根開始…")
     for j in range(start, len(tw)):
         actual = (closes[j] / closes[j - 1] - 1) * 100
@@ -95,8 +97,13 @@ def run(period="6y", start=260):
         sc = np.array([g[x] for x in GROUPS], float)
         wv = np.array([w[x] for x in GROUPS])
         wsc = float(wv @ sc)
-        rows.append({"date": dates[j].date().isoformat(), "g": [int(v) for v in sc], "wsc": wsc, "pred": k * wsc, "actual": float(actual),
+        gap = (opens[j] / closes[j - 1] - 1) * 100
+        xms = float(w["國際與資金面"] * sc[3])
+        kg = min(0.4, max(0.0, gxy / gxx)) if gxx > 0 else 0.05
+        rows.append({"gap": float(gap), "pgap": kg * xms, "date": dates[j].date().isoformat(), "g": [int(v) for v in sc], "wsc": wsc, "pred": k * wsc, "actual": float(actual),
                      "f": [round(float(v), 3) for v in feature_vector(sub, Q, g)]})
+        gxx += xms * xms
+        gxy += xms * gap
         x = sc * k                                   # 看過 T 日結果之後才調整權重（NLMS）
         err = actual - float(wv @ x)
         nx = float(x @ x) + 0.01
@@ -107,7 +114,7 @@ def run(period="6y", start=260):
             Rr = np.array([r["actual"] for r in rows[-120:]])
             if float(S @ S) > 0:
                 k = float(min(0.5, max(0.02, (S @ Rr) / (S @ S))))
-    return rows, w, k, dates
+    return rows, w, k, dates, (min(0.4, max(0.0, gxy / gxx)) if gxx > 0 else 0.05)
 
 
 def bucket_stats(rows):
@@ -131,11 +138,17 @@ def summarize(rows):
 
 
 def build_model(period="6y"):
-    rows, w, k, dates = run(period)
+    rows, w, k, dates, kg = run(period)
+    G = np.array([r["gap"] for r in rows])
+    PG = np.array([r["pgap"] for r in rows])
+    mg = np.abs(PG) >= 0.05
+    gap_stats = {"k": round(float(kg), 4), "n": int(len(G)), "calls": int(mg.sum()),
+                 "hit": float(np.mean(np.sign(PG[mg]) == np.sign(G[mg]))) if mg.any() else None,
+                 "mae": float(np.mean(np.abs(PG - G))), "mae0": float(np.mean(np.abs(G))), "adv": float(np.mean(np.abs([r["actual"] for r in rows[-60:]])))}
     F = np.array([r["f"] for r in rows], float)
     model = {"generated": dt.datetime.now().isoformat(timespec="seconds"), "period": period,
              "weights": {g: round(w[g], 3) for g in GROUPS}, "k": round(k, 4), "oos": summarize(rows),
-             "buckets": bucket_stats(rows), "mean": [round(float(v), 4) for v in F.mean(0)],
+             "gap": gap_stats, "buckets": bucket_stats(rows), "mean": [round(float(v), 4) for v in F.mean(0)],
              "std": [round(float(v) if v > 1e-6 else 1.0, 4) for v in F.std(0)],
              "feats": [[r["date"]] + r["f"] + [round(r["actual"], 3)] for r in rows]}
     return model
