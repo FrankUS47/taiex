@@ -45,13 +45,14 @@ jobs:
       - name: 安裝套件
         run: pip install -r requirements.txt
 
-      # 預測紀錄與逐日法人（本 workflow 會更新，所以也要儲存）
+      # 預測紀錄、逐日法人、個股預測快照（本 workflow 會更新，所以也要儲存）
       - name: 還原快取（預測與法人歷史）
         uses: actions/cache/restore@v4
         with:
           path: |
             v1/cache/predictions.json
             v1/cache/inst_hist.json
+            v1/cache/stock_pred.json
           key: state-none
           restore-keys: state-
 
@@ -64,6 +65,7 @@ jobs:
             v1/cache/trends.json
             v1/cache/etf.json
             v1/cache/model.json
+            v1/cache/adr.json
           key: heavy-none
           restore-keys: heavy-
 
@@ -83,14 +85,21 @@ jobs:
           set -o pipefail
           python stock_universe.py --no-open 2>&1 | tee universe.log
 
+      # 用篩選頁同一套 JavaScript 算出每檔的預測，開盤前凍結成快照；隔天起就能和實際比對，並逐日校準預測幅度
+      - name: 個股預測快照（盤前凍結，供隔天與實際比對）
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node predict_snapshot.js universe.html cache/stock_pred.json
+
       - name: 儲存快取（預測與法人歷史）
-        if: always() && hashFiles('v1/cache/predictions.json', 'v1/cache/inst_hist.json') != ''
+        if: always() && hashFiles('v1/cache/predictions.json', 'v1/cache/inst_hist.json', 'v1/cache/stock_pred.json') != ''
         uses: actions/cache/save@v4
         with:
           path: |
             v1/cache/predictions.json
             v1/cache/inst_hist.json
-          key: state-${{ hashFiles('v1/cache/predictions.json', 'v1/cache/inst_hist.json') }}
+            v1/cache/stock_pred.json
+          key: state-${{ hashFiles('v1/cache/predictions.json', 'v1/cache/inst_hist.json', 'v1/cache/stock_pred.json') }}
 
       # 某一步失敗時，網站仍會發佈，並在該頁顯示「這次產生失敗」，不會默默停在舊資料
       - name: 組合網站
