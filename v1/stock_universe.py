@@ -31,6 +31,7 @@ from taiex_analyzer import STATUS, UA, expected_last_day, num, safe
 OUT_FILE = Path(__file__).with_name("universe.html")
 TRENDS = Path(__file__).with_name("cache") / "trends.json"
 ETFC = Path(__file__).with_name("cache") / "etf.json"
+ADRC = Path(__file__).with_name("cache") / "adr.json"
 
 IND = {"01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維", "05": "電機機械", "06": "電器電纜",
        "08": "玻璃陶瓷", "09": "造紙工業", "10": "鋼鐵工業", "11": "橡膠工業", "12": "汽車工業", "14": "建材營造",
@@ -328,6 +329,10 @@ th.c-name,td.c-name{position:sticky;left:64px;background:var(--card);z-index:2;b
 <p style="font-size:15px">📍 <a class="nv" href="taiex_report.html">大盤分析</a>｜<a class="nv" href="universe.html"><b>🔎 全市場篩選與評價</b></a></p>
 <p class="note">報價：__DATE__｜資料更新：__NOW__｜條件在你的瀏覽器即時篩選，不需重新執行。僅供研究參考，不構成投資建議。</p>
 <div id="stale" style="display:none;background:#fff3cd;color:#1d2330;border:1px solid #e0a800;border-radius:6px;padding:8px;margin:6px 0"></div>
+<div class="card" id="lk"><b>🔍 查詢個股、ETF、權證</b>
+<input id="lookup" placeholder="輸入股號或名稱，例如 2330 或 台積電" oninput="lookupGo()" style="max-width:380px;margin:0 8px">
+<span class="note">會顯示綜合傾向的分項說明、型態與 K 棒、法人、委買委賣、估值、ETF 或權證資料，以及（台積電等）ADR 的歷史關係。</span>
+<div id="lkres" style="margin-top:6px"></div><div id="lkcard"></div></div>
 <div><button class="tb on" data-t="s" onclick="tab('s')">個股／ETF</button><button class="tb" data-t="b" onclick="tab('b')">類股強弱</button><button class="tb" data-t="i" onclick="tab('i')">法人買賣超</button><button class="tb" data-t="w" onclick="tab('w')">權證</button><button class="tb" data-t="a" onclick="tab('a')">申請上市</button></div>
 
 <section id="ts" class="card"><div class="g">
@@ -378,6 +383,7 @@ const D=__DATA__;
 const $=id=>document.getElementById(id),esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const nv=id=>{const v=$(id).value.trim();return v===""?null:parseFloat(v)},fx=(x,d)=>x==null?"—":x.toFixed(d);
 const SC=D.scores||{},TR=D.trends||{},SER=D.series||{},HELPD=D.help||{},ETF=D.etf||{},ind=s=>s[10]||"未分類";
+const ADRP={};if(D.adr&&D.adr.pairs)Object.values(D.adr.pairs).forEach(p=>{ADRP[p.code]=p});
 const fe=(s,x,d)=>x==null?((s[2]==="ETF/ETN"||s[2]==="權證")?"<span class='note'>不適用</span>":"—"):x.toFixed(d);
 const INDS=[...new Set(D.stocks.map(ind))].sort((a,b)=>a.localeCompare(b,"zh-Hant"));
 function tab(t){["s","b","i","w","a"].forEach(k=>$("t"+k).style.display=k===t?"":"none");document.querySelectorAll(".tb").forEach(b=>b.classList.toggle("on",b.dataset.t===t))}
@@ -403,7 +409,11 @@ function patHtml(c,pats){let h="<p><b>圖形型態：</b>"+esc(pats.join("、"))
  pats.forEach(x=>{const b=x.replace(/[(].*$/,"");if(HELPD[b])h+="<p class='note'><b>"+esc(b)+"</b>："+esc(HELPD[b])+"</p>"});return h}
 function etfHtml(c){const e=ETF[c];if(!e)return"";const f=(x,d)=>x==null?"—":x.toFixed(d);
  return "<p><b>ETF 資料（Yahoo）：</b>淨值 "+f(e.nav,2)+"｜折溢價 "+(e.pn==null?"—":((e.pn-1)*100).toFixed(2)+"%")+"｜規模 "+(e.aum==null?"—":(e.aum/1e8).toFixed(1)+" 億")+"｜殖利率 "+f(e.y,2)+"%｜持股本益比 "+f(e.pe,1)+"</p>"}
-function detHtml(c){const k=SC[c],t=TR[c];let h=anaHtml(c)+warrHtml(c)+etfHtml(c);
+function adrHtml(c){const p=ADRP[c];if(!p)return"";const f=v=>v==null?"—":(v*100).toFixed(0)+"%",sg=v=>"<span class='"+(v>0?"up":v<0?"dn":"")+"'>"+(v>0?"+":"")+v.toFixed(2)+"%</span>";
+ const rc=(p.recent||[]).slice(-6).reverse().map(r=>"<tr><td>"+esc(r.date)+"</td><td>"+sg(r.adr)+"</td><td>"+sg(r.gap)+"</td><td>"+sg(r.close)+"</td></tr>").join("");
+ return "<div style='margin-top:6px'><b>ADR 與台股隔日走勢（歷史統計）</b>：美股 "+esc(p.adr)+" → "+esc(p.name)+"（"+esc(p.code)+"）｜樣本 "+p.n+" 天｜β "+p.beta.toFixed(2)+"（ADR 漲跌 1%，開盤平均跟著動約 "+p.beta.toFixed(2)+"%）｜開盤方向一致率 "+f(p.agree)+"｜相關 "+p.corr.toFixed(2)+"｜"+(p.threshold==null?"沒有任何 ADR 幅度區間的一致率超過 65%":"ADR 漲跌約 ≥"+p.threshold+"% 時，台股開盤才明顯跟著走")+
+ "<table style='width:auto;margin-top:4px'><tr><th>台股日期</th><th>前夜 ADR</th><th>開盤跳空</th><th>收盤漲跌</th></tr>"+rc+"</table><p class='note'>歷史統計，不代表因果；詳細分區與目前預估請看大盤分析頁的 ADR 卡片。</p></div>"}
+function detHtml(c){const k=SC[c],t=TR[c];let h=anaHtml(c)+warrHtml(c)+etfHtml(c)+adrHtml(c);
  if(t&&t[5]&&t[5].length)h+=patHtml(c,t[5]);
  if(t)h+="<p><b>走勢：</b>"+(t[0]>0?"連續上漲 "+t[0]+" 日":t[0]<0?"連續下跌 "+(-t[0])+" 日":"無連續漲跌")+"；5日 "+t[1]+"%、20日 "+t[2]+"%"+(t[3]?"；K棒警示："+esc(t[3]):"")+"（最新K棒實體 "+t[4]+"%）</p>";
  if(!k)return h+"此檔尚無深入評價資料。";
@@ -462,6 +472,16 @@ function anaHtml(c){const a=analysis(c);if(!a.items.length)return"<p class='note
  "<p class='note'>規則式加減分，不是買賣建議；各因素不代表因果。法人資料為最近一個交易日盤後（"+esc((D.inst&&D.inst.date)||"—")+"），委託為報價時間的快照。</p></div>"}
 function warrHtml(c){const w=WARR[c];if(!w)return"";const u=findU(w[1]);
  return "<p><b>權證資料：</b>類型 "+esc(w[0]||"—")+"｜標的 "+esc(w[1]||"—")+(u?"（"+esc(u[0])+" 現價 "+fx(u[4],2)+"）":"")+"｜履約價 "+esc(w[2]||"—")+"｜最後交易日 "+esc(w[3]||"—")+"（資料日期 "+esc(D.warr_day||"—")+"）</p>"}
+function lookupGo(){const q=$("lookup").value.trim().toLowerCase();if(!q){$("lkres").innerHTML="";$("lkcard").innerHTML="";return}
+ const m=D.stocks.filter(s=>s[0].toLowerCase()===q||s[0].toLowerCase().startsWith(q)||s[1].toLowerCase().includes(q)).slice(0,14);
+ if(!m.length){$("lkres").innerHTML="<p class='note'>找不到「"+esc(q)+"」。本頁涵蓋上市、上櫃的股票與 ETF，以及成交金額前 400 檔的權證；冷門或剛上市的標的可能沒有。</p>";$("lkcard").innerHTML="";return}
+ const exact=m.find(s=>s[0].toLowerCase()===q)||(m.length===1?m[0]:null);
+ $("lkres").innerHTML=(m.length>1?"<span class='note'>符合 "+m.length+" 檔，點選查看：</span>":"")+m.map(s=>"<span class='chip mid' data-c='"+esc(s[0])+"' onclick='lookupShow(this.dataset.c)'>"+esc(s[0])+" "+esc(s[1])+"</span>").join("");
+ if(exact)lookupShow(exact[0]);else $("lkcard").innerHTML=""}
+function lookupShow(c){const s=ROWS[c];if(!s)return;
+ $("lkcard").innerHTML="<div style='border-top:1px solid var(--bd);margin-top:8px;padding-top:8px'><h3 style='margin:0 0 4px'>"+esc(s[1])+"（"+esc(c)+"） <span class='note'>"+esc(s[2])+"｜"+esc(s[3])+"｜"+esc(ind(s))+"</span></h3>"+
+ "<p>現價 <b>"+fx(s[4],2)+"</b> <span class='"+(s[5]>0?"up":s[5]<0?"dn":"")+"'>"+(s[5]>0?"+":"")+s[5].toFixed(2)+"%</span>｜成交量 "+s[6].toLocaleString()+" 張｜本益比 "+fe(s,s[7],1)+"｜殖利率 "+fe(s,s[8],2)+"%｜淨值比 "+fe(s,s[9],2)+"</p>"+
+ "<p class='note'><a href='https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID="+esc(c)+"' target='_blank' rel='noopener'>Goodinfo</a>｜<a href='https://tw.stock.yahoo.com/quote/"+esc(c)+"' target='_blank' rel='noopener'>Yahoo 股市</a></p>"+detHtml(c)+"</div>"}
 function popClose(){$("pop").style.display="none"}
 function popShow(h){$("popb").innerHTML=h;$("pop").style.display="block"}
 function chipClick(ev,kind,c,name){ev.stopPropagation();popShow(kind==="p"?patPop(c,name):kPop(c,name))}
@@ -589,6 +609,11 @@ def main():
     scores, scored_at, _ = load_cache(SCORES)
     trends, trends_at, tj = load_cache(TRENDS)
     etf, _, _ = load_cache(ETFC)
+    try:
+        adr = json.loads(ADRC.read_text(encoding="utf-8"))
+    except Exception:  # noqa
+        adr = {}
+    STATUS.append(("ADR 研究快取(cache/adr.json)", bool(adr), f"{len(adr.get('pairs', {}))} 組" if adr else "尚無快取或讀取失敗"))
     for r in stocks:
         e = etf.get(r[0]) if r[2] == "ETF/ETN" else None
         if e:
@@ -606,7 +631,7 @@ def main():
     st = "".join(f'<tr><td>{html.escape(n)}</td><td>{"成功" if ok else "失敗"}</td><td>{html.escape(m)}</td></tr>' for n, ok, m in STATUS)
     data = json.dumps({"stocks": stocks, "warrants": war, "apply": app, "scores": scores, "scored_at": scored_at,
                        "trends": trends, "trends_at": trends_at, "inst": inst,
-                       "series": tj.get("series", {}), "etf": etf, "warr": warr, "warr_day": warr_day,
+                       "series": tj.get("series", {}), "etf": etf, "warr": warr, "warr_day": warr_day, "adr": adr,
                        "trends_asof": tj.get("asof", ""), "trends_stale": bool(tj.get("asof")) and tj.get("asof") < expected_last_day().isoformat(), "help": {k: v for k, v in HELP.items()}, "pattern_tail": TAIL}, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     src = f"證交所即時（{rt[1]}，覆蓋 {rt[0]}/{rt[2]} 檔，其餘為最近收盤）" if rt else "最近一個交易日的收盤價（即時報價抓不到或非開盤時段）"
     page = (PAGE.replace("__DATA__", data).replace("__KINDS__", kh).replace("__STATUS__", st)

@@ -49,7 +49,8 @@ MARKETS = {  # 名稱: Yahoo 代號
     "美元/台幣": "TWD=X", "美元指數": "DX-Y.NYB", "美國10年債殖利率": "^TNX",
     "WTI原油": "CL=F", "黃金": "GC=F",
     "S&P500期貨": "ES=F", "那斯達克期貨": "NQ=F", "道瓊期貨": "YM=F", "EWT台灣ETF(美股)": "EWT",
-    "德國DAX": "^GDAXI", "英國富時100": "^FTSE", "日圓/美元": "JPY=X", "歐元/美元": "EURUSD=X", "人民幣/美元(離岸)": "CNH=X",
+    "德國DAX": "^GDAXI", "英國富時100": "^FTSE", "日圓/美元": "JPY=X", "歐元/美元": "EURUSD=X",
+    "美元/人民幣(離岸)": "CNH=X", "美元/人民幣(在岸)": "CNY=X", "聯電ADR": "UMC", "日月光投控ADR": "ASX", "中華電信ADR": "CHT",
 }
 NEWS_TOPICS = {
     "台股": "台股 大盤",
@@ -254,7 +255,7 @@ def sc(x, h):  # 以門檻 h 評分 -2..+2
     return 2 if x > h else 1 if x > 0 else -2 if x < -h else -1 if x < 0 else 0
 
 
-def macro_score(Q, rt, inst, fut, news_data, last_date):
+def macro_score(Q, rt, inst, fut, news_data, last_date, adr_model=None):
     R = []
     add = lambda p, t: R.append((p, t))
     g = lambda k: Q.get(k)
@@ -274,7 +275,13 @@ def macro_score(Q, rt, inst, fut, news_data, last_date):
     if g("費城半導體"):
         add(sc(g("費城半導體")["pct"], 1) * 2, f"費半 {g('費城半導體')['pct']:+.2f}%（權重加倍）")
     if g("台積電ADR"):
-        add(sc(g("台積電ADR")["pct"], 1), f"台積電ADR {g('台積電ADR')['pct']:+.2f}%")
+        a = g("台積電ADR")["pct"]
+        pm = ((adr_model or {}).get("pairs") or {}).get("TSM")
+        if pm:
+            ex = pm["alpha"] + pm["beta"] * a
+            add(max(-2, min(2, round(ex / 0.35))), f"台積電ADR {a:+.2f}% → 依近年統計預估台積電隔日開盤約 {ex:+.2f}%（β={pm['beta']:.2f}，方向一致率 {pm['agree'] * 100:.0f}%）")
+        else:
+            add(sc(a, 1), f"台積電ADR {a:+.2f}%")
     us = [g(k)["pct"] for k in ("S&P500", "道瓊", "那斯達克") if g(k)]
     if us:
         add(sc(float(np.mean(us)), 0.5), f"美股三大指數平均 {np.mean(us):+.2f}%")
@@ -287,6 +294,9 @@ def macro_score(Q, rt, inst, fut, news_data, last_date):
     if g("美元/台幣"):
         p = g("美元/台幣")["pct"]
         add(-1 if p > 0.3 else 1 if p < -0.3 else 0, f"美元/台幣 {g('美元/台幣')['last']:.3f}（{p:+.2f}%，{'台幣貶值，外資偏流出' if p > 0.3 else '台幣升值，利外資' if p < -0.3 else '匯率平穩'}）")
+    if g("美元/人民幣(離岸)"):
+        p = g("美元/人民幣(離岸)")["pct"]
+        add(-1 if p > 0.3 else 1 if p < -0.3 else 0, f"美元/人民幣(離岸) {g('美元/人民幣(離岸)')['last']:.4f}（{p:+.2f}%，{'人民幣貶值，亞洲風險偏好轉弱' if p > 0.3 else '人民幣升值，利亞洲股市' if p < -0.3 else '人民幣平穩'}）")
     if g("美元指數"):
         p = g("美元指數")["pct"]
         add(-1 if p > 0.5 else 1 if p < -0.5 else 0, f"美元指數 {p:+.2f}%")
@@ -442,6 +452,58 @@ function applyRange(){var s=document.getElementById('rg1').value,e=document.getE
 function lastN(){var n=+document.getElementById('rgn').value||60;kcs().forEach(function(g){var x=g.data[0].x,s=x[Math.max(0,x.length-n)],e=x[x.length-1];Plotly.relayout(g,{'xaxis.range':[s,e],'xaxis2.range':[s,e]})})}
 function resetRange(){document.querySelectorAll('.kc').forEach(function(w){var g=w.querySelector('.plotly-graph-div');if(!g)return;var a=w.dataset.x0,b=w.dataset.x1;Plotly.relayout(g,{'xaxis.range':[a,b],'xaxis2.range':[a,b]})})}
 </script>"""
+
+
+ADR_NAMES = {"TSM": "台積電ADR", "UMC": "聯電ADR", "ASX": "日月光投控ADR", "CHT": "中華電信ADR"}
+
+
+def adr_card(m, Q):
+    """ADR 漲跌對台股隔日開盤的影響：歷史統計、目前預估、近期對照（含「ADR 跌但台股開高」這類情形的說明）。"""
+    sg = lambda v: f'<span class="{cls(v)}">{v:+.2f}%</span>'
+    rows = ""
+    for sym, p in m["pairs"].items():
+        q = Q.get(ADR_NAMES.get(sym, ""))
+        cur = q["pct"] if q else None
+        ex = None if cur is None else p["alpha"] + p["beta"] * cur
+        bk = next((b for b in p["buckets"] if cur is not None and b["lo"] <= abs(cur) < b["hi"]), None)
+        sigma = (p.get("oos") or {}).get("sigma")
+        prem = p.get("premium")
+        rows += (f'<tr><td>{sym}→{p["code"]} {p["name"]}</td><td>{"—" if cur is None else sg(cur)}</td>'
+                 f'<td>{"—" if ex is None else sg(ex) + ("" if sigma is None else f" ±{sigma:.2f}")}</td>'
+                 f'<td>{"—" if not bk or bk["agree"] is None else format(bk["agree"] * 100, ".0f") + "%（" + str(bk["n"]) + "次）"}</td>'
+                 f'<td>{p["beta"]:.2f}</td><td>{p["agree"] * 100:.0f}%</td><td>{p["corr"]:.2f}</td>'
+                 f'<td>{"無（各區間一致率都未達 65%）" if p["threshold"] is None else "約 ≥" + format(p["threshold"], "g") + "%"}</td>'
+                 f'<td>{"—" if not prem else format(prem["now"], "+.1f") + "%（近一年平均 " + format(prem["mean"], "+.1f") + "%）"}</td></tr>')
+    h = ['<div class="card"><h2>ADR 漲跌對台股隔日開盤的影響（歷史統計）</h2>',
+         f'<p>統計期間約 {m["period"]}：把每個台股交易日，配上「前一個美股交易日」ADR 的漲跌幅，與該台股當天的<b>開盤跳空</b>（開盤價相對前一日收盤）比對。'
+         'β＝ADR 每漲跌 1%，台股開盤平均跟著動幾 %；「此幅度區間一致率」是目前 ADR 漲跌幅所在區間，過去台股開盤與 ADR 同方向的比例。</p>',
+         '<table><tr><th>ADR→台股</th><th>目前 ADR 漲跌</th><th>預估台股開盤跳空（±誤差）</th><th>此幅度區間一致率</th><th>β</th><th>整體一致率</th><th>相關係數</th>'
+         f'<th>明顯跟著走的 ADR 幅度</th><th>ADR 折溢價</th></tr>{rows}</table>']
+    t = m["pairs"].get("TSM")
+    if t and t.get("recent"):
+        rr = ""
+        for r in t["recent"][::-1][:10]:
+            if abs(r["adr"]) < 0.3:
+                res = "ADR 幅度太小"
+            else:
+                res = "同向" if (r["adr"] > 0) == (r["gap"] > 0) else "反向"
+            rr += f'<tr><td>{r["date"]}</td><td>{sg(r["adr"])}</td><td>{sg(r["gap"])}</td><td>{sg(r["close"])}</td><td>{res}</td></tr>'
+        h.append('<h3 style="font-size:15px;margin:12px 0 4px">近期對照：台積電（日期為台股交易日，ADR 為前一個美股日）</h3>'
+                 f'<table><tr><th>台股日期</th><th>前夜 ADR 漲跌</th><th>台積電開盤跳空</th><th>台積電收盤漲跌</th><th>開盤方向</th></tr>{rr}</table>')
+        last = t["recent"][-1]
+        bk = next((b for b in t["buckets"] if b["lo"] <= abs(last["adr"]) < b["hi"]), None)
+        if bk and bk["agree"] is not None and abs(last["adr"]) >= 0.3 and (last["adr"] > 0) != (last["gap"] > 0):
+            h.append(f'<p>最近一筆（{last["date"]}）ADR {sg(last["adr"])}，台積電開盤卻是 {sg(last["gap"])}（方向相反）。'
+                     f'ADR 漲跌幅 {bk["lo"]:g}～{bk["hi"]:g}% 這個區間，歷史上台股開盤與 ADR 同向的比例是 {bk["agree"] * 100:.0f}%（{bk["n"]} 次），'
+                     f'所以幅度不大時反向並不罕見；這時台股更常受大盤、匯率、法人與當天消息影響。</p>')
+    tp = t.get("premium") if t else None
+    if tp and tp["std"] > 0:
+        z = (tp["now"] - tp["mean"]) / tp["std"]
+        h.append(f'<p>台積電 ADR 折溢價目前 {tp["now"]:+.1f}%（近一年平均 {tp["mean"]:+.1f}%、標準差 {tp["std"]:.1f}%，約 {z:+.1f} 個標準差）。'
+                 '折溢價是 ADR 價格×匯率÷換股比例相對台股收盤的差距，偏離平均越多，常伴隨隔日台股往縮小差距的方向調整，但不保證。</p>')
+    h.append('<p class="note">β 與一致率是依歷史資料（指數加權、近期權重較高）逐步校正的結果，只代表過去的統計關係，並非因果；台股開盤還受大盤、匯率、法人與開盤前消息影響。'
+             'ADR 清單與換股比例可能變動。僅供研究參考，不構成投資建議。</p></div>')
+    return "".join(h)
 
 
 def bt_card(model, df, Q, ts, ks, ps):
@@ -769,6 +831,9 @@ def build(refresh=0):
     HIST_LAST_CLOSE = float(df["Close"].iloc[-1])
     Q = {k: safe(f"{k}({s})", quote, s) for k, s in MARKETS.items()}
     Q = {k: v for k, v in Q.items() if v}
+    if Q.get("美元/台幣") and Q.get("美元/人民幣(離岸)"):   # 人民幣兌台幣＝（美元/台幣）÷（美元/人民幣）
+        a_, b_ = Q["美元/台幣"], Q["美元/人民幣(離岸)"]
+        Q["人民幣/台幣(換算)"] = {"last": a_["last"] / b_["last"], "pct": ((1 + a_["pct"] / 100) / (1 + b_["pct"] / 100) - 1) * 100, "date": min(a_["date"], b_["date"])}
     rt = safe("證交所即時指數", twse_realtime)
     inst = safe("證交所三大法人", institutional)
     fut = safe("期交所台指期", taifex)
@@ -780,7 +845,14 @@ def build(refresh=0):
     K = kbar(df)
     PT = CP.detect(df)
     ps = CP.score(PT)
-    M, N = macro_score(Q, rt, inst, fut, nws, info["date"])
+    adrm = None
+    try:
+        import adr_study as AS
+        adrm = AS.load_model()
+        STATUS.append(("ADR 研究(cache/adr.json，由 adr_study.py 產生)", bool(adrm), "OK" if adrm else "尚無（heavy workflow 會產生）"))
+    except Exception as e:  # noqa
+        STATUS.append(("ADR 研究(cache/adr.json)", False, f"{type(e).__name__}: {str(e)[:80]}"))
+    M, N = macro_score(Q, rt, inst, fut, nws, info["date"], adrm)
     ts, ms, ns = (sum(p for p, _ in x) for x in (T, M, N))
     ks = max(-3, min(3, sum(p for p, _ in K)))
     tot = ts + ks + ps + ms + ns
@@ -832,7 +904,7 @@ def build(refresh=0):
     p.append(f'<div class="big">加權指數 <b>{cur["price"]:,.2f}</b> <span class="{cls(chg)}">{chg:+,.2f}（{pc:+.2f}%）</span></div>')
     p.append(f'<div class="note">來源：{cur["src"]}｜資料時間：{cur["time"]}｜昨收 {cur["prev"]:,.2f}</div>')
     chips = "　".join(f'{k} <span class="{cls(Q[k]["pct"])}">{Q[k]["pct"]:+.2f}%</span>' for k in
-                    ("S&P500", "那斯達克", "費城半導體", "台積電ADR", "EWT台灣ETF(美股)", "S&P500期貨", "那斯達克期貨", "VIX恐慌指數", "美元/台幣") if k in Q)
+                    ("S&P500", "那斯達克", "費城半導體", "台積電ADR", "聯電ADR", "日月光投控ADR", "中華電信ADR", "EWT台灣ETF(美股)", "S&P500期貨", "那斯達克期貨", "VIX恐慌指數", "美元/台幣", "美元/人民幣(離岸)", "人民幣/台幣(換算)") if k in Q)
     if chips:
         p.append(f'<div class="note">海外最新（相對前一收盤，Yahoo 可能延遲）：{chips}<br>美股現金交易時段約台灣時間 22:30～05:00（冬令；夏令為 21:30～04:00），期貨近 24 小時交易，晚上的隔日台股判斷以美股、期貨與 EWT 為主。</div>')
     p.append(f'<div class="big">{"今日" if PR.target_date(now) == now.date() else "隔日"}預判：<span class="{c}">{label}</span>（加權後 {weighted:+.1f}；原始總分 {tot:+d}＝技術面 {ts:+d}＋K棒型態 {ks:+d}＋圖形型態 {ps:+d}＋國際與資金面 {ms:+d}＋消息面 {ns:+d}）</div>')
@@ -840,6 +912,11 @@ def build(refresh=0):
     today_s = now.strftime("%Y%m%d")
     if pdat is not None:
         p.append(pred_card(pdat, w, entry, weighted, now, pc, today_s in cur["time"].replace("-", ""), tot, w_live, mw, (model or {}).get("k")))
+    if adrm:
+        try:
+            p.append(adr_card(adrm, Q))
+        except Exception as e:  # noqa
+            STATUS.append(("ADR 卡片", False, f"{type(e).__name__}: {str(e)[:100]}"))
     if model:
         try:
             p.append(bt_card(model, df, Q, ts, ks, ps))
